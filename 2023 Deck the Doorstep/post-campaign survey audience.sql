@@ -224,16 +224,18 @@ WITH sub AS (SELECT u.creator_id                  AS consumer_id
              GROUP BY 1
              ORDER BY 3 DESC)
 
-, dashpass_sub as (SELECT DISTINCT CONSUMER_ID
-from edw.consumer.fact_consumer_subscription__daily__extended
-where dte = (select max(dte) from edw.consumer.fact_consumer_subscription__daily__extended)
-    and (select max(dte) from edw.consumer.fact_consumer_subscription__daily__extended)  between start_time and end_time
-and DYNAMIC_SUBSCRIPTION_STATUS in ('active_free_subscription','active_paid', 'active_trial','trial_waiting_for_payment','dtp_waiting_for_payment','paid_waiting_for_payment')
-)
+   , dashpass_sub AS (SELECT DISTINCT CONSUMER_ID
+                      FROM edw.consumer.fact_consumer_subscription__daily__extended
+                      WHERE dte = (SELECT MAX(dte) FROM edw.consumer.fact_consumer_subscription__daily__extended)
+                        AND (SELECT MAX(dte)
+                             FROM edw.consumer.fact_consumer_subscription__daily__extended) BETWEEN start_time AND end_time
+                        AND DYNAMIC_SUBSCRIPTION_STATUS IN
+                            ('active_free_subscription', 'active_paid', 'active_trial', 'trial_waiting_for_payment',
+                             'dtp_waiting_for_payment', 'paid_waiting_for_payment'))
 
 
 SELECT DISTINCT u.consumer_id,
-                du.email as email,
+                du.email                                AS email,
                 IFF(u.num_campaigns_redeemed > 0, 1, 0) AS used_promo_y_n,  ---- has this cx redeemed bts promos -- y/n
                 u.num_campaigns_redeemed                AS num_promos_used,
                 u.num_redemptions                       AS num_of_dtd_purchases,
@@ -246,7 +248,7 @@ FROM sub u
                                          e.open_email_within_24h_count + e.open_push_within_24h_count +
                                          e.link_click_email_within_24h_count + e.link_click_push_within_24h_count > 0
      LEFT JOIN dianedou.dtd_dec_orders o ON u.consumer_id = o.consumer_id
-     LEFT JOIN  dashpass_sub dp ON u.consumer_id = dp.consumer_id
+     LEFT JOIN dashpass_sub dp ON u.consumer_id = dp.consumer_id
      LEFT JOIN public.dimension_users du
                ON du.consumer_id = u.consumer_id AND du.experience = 'doordash' AND du.is_guest = FALSE;
 ;
