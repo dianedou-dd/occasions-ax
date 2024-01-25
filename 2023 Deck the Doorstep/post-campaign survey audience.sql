@@ -72,13 +72,15 @@ SELECT campaign_name,
        consumer_bucket,
        consumer_id,
        MIN(start_time_derived) AS start_time_derived,
-       MIN(exposure_time)      AS exposure_time
+       MIN(exposure_time)      AS min_exposure_time
 FROM EDW.CONSUMER.CAMPAIGN_ANALYZER_EXPOSURES
 WHERE campaign_name IN (
                         '[Big G] Non-DP Adoption Series XVertical', ---- STOCKED4U
                         '[Big G] DP Adoption Series XVertical', ---- STOCKED40
                         '[Big G] DP Adoption Series XVertical - Updated' ---- STOCKED40
     )
+    and exposure_time::date between '2023-12-01'::date and '2023-12-12'::date
+    and consumer_bucket NOT IN ('control', 'holdout', 'false')
 GROUP BY 1, 2, 3
 
 UNION
@@ -88,11 +90,13 @@ SELECT LOWER(s.program_name)                   AS campaign_name,
            ELSE program_experiment_variant END AS consumer_bucket,
        consumer_id,
        MIN(received_at)                        AS start_time_derived,
-       MIN(received_at)                        AS exposure_time
+       MIN(received_at)                        AS min_exposure_time
 FROM SEGMENT_EVENTS_RAW.CONSUMER_PRODUCTION.ENGAGEMENT_PROGRAM s
 WHERE LOWER(s.program_name) IN ('ep_consumer_bigg_us_dp_adoption', --- STOCKED40
                                 'ep_consumer_bigg_us_ndp_adoption' ---- STOCKED4U
     )
+     and received_at::date between '2023-12-01'::date and '2023-12-12'::date
+     and consumer_bucket NOT IN ('control', 'holdout', 'false')
 GROUP BY 1, 2, 3
 
 UNION
@@ -100,11 +104,13 @@ SELECT campaign_name,
        consumer_bucket,
        consumer_id,
        MIN(start_time_derived) AS start_time_derived,
-       MIN(exposure_time)      AS exposure_time
+       MIN(exposure_time)      AS min_exposure_time
 FROM EDW.CONSUMER.CAMPAIGN_ANALYZER_EXPOSURES
 WHERE campaign_name IN ('ep_consumer_dashmartfmx_us_v2_t3' ---- SUPER10EPS ---- 14d
     , 'ep_consumer_dashmartfmx_us_game_t1' ---- 50TRYDM ---- 7d
     )
+     and exposure_time::date between '2023-12-01'::date and '2023-12-12'::date
+     and consumer_bucket NOT IN ('control', 'holdout', 'false')
 GROUP BY 1, 2, 3
 
 UNION
@@ -113,7 +119,7 @@ SELECT experiment_name    AS campaign_name,
        result             AS consumer_bucket,
        bucket_key         AS consumer_id,
        '2023-12-01'::DATE AS start_time_derived,
-       MIN(exposure_time) AS exposure_time
+       MIN(exposure_time) AS min_exposure_time
 FROM iguazu.server_events_production.experiment_exposure
 WHERE experiment_name IN (
 --- we selected the highest spending DtD ad ops campaigns.
@@ -121,7 +127,7 @@ WHERE experiment_name IN (
                           'dollargeneral-120123-121223-dv' --change this to your DV name
     , 'aldi-120423-120823-dv', 'walgreens-120123-121223-dv', 'sprouts-120523-121123-dv', 'cvs-120123-121223-dv'
     )
-  AND exposure_time::DATE >= '2023-12-01' --change this to the timeframe your test ran
+  AND exposure_time::DATE between '2023-12-01'::date and '2023-12-12'::date --change this to the timeframe your test ran
   AND result = 'treatment'                -- update to correct bucket name
 GROUP BY 1, 2, 3, 4;
 
@@ -177,6 +183,13 @@ FROM yvonneliu.test_no_redempt;
 
 GRANT SELECT ON TABLE yvonneliu.dtd_deal_nonusers TO read_only_users;
 
+create or replace table yvonneliu.master_dtd_survey_cx as
+select creator_id::integer as consumer_id, 1 as used_deal_flag from yvonneliu.dtd_deal_users
+  union
+select consumer_id::integer as consumer_id, 0 as used_deal_flag from yvonneliu.dtd_deal_nonusers;
+
+GRANT SELECT ON TABLE yvonneliu.master_dtd_survey_cx TO read_only_users;
+
 -- Step 4: Attribute tables for DtD deals users
 CREATE OR REPLACE TABLE dianedou.dtd_crm_eng AS
 SELECT eng.consumer_id,
@@ -191,6 +204,24 @@ SELECT eng.consumer_id,
 FROM edw.consumer.fact_consumer_notification_engagement eng
 WHERE sent_at_date BETWEEN $crm_start_date AND $crm_end_date
 GROUP BY 1;
+
+
+CREATE OR REPLACE TABLE yvonneliu.dtd_dec_1_12_orders AS
+WITH dd_dtd_deliv AS (
+  SELECT 
+creator_id
+, IFNULL(count(distinct delivery_id),0) as num_dtd_orders
+FROM PRODDB.PUBLIC.dimension_deliveries
+ WHERE is_filtered_core = TRUE
+   AND is_caviar = 0
+   AND CREATED_AT::DATE between '2023-12-01'::date AND '2023-12-12'::date
+ GROUP BY 1)
+
+SELECT distinct a.CREATOR_ID                           AS consumer_id
+     , num_dtd_orders
+FROM yvonneliu.master_dtd_survey_cx a
+     LEFT JOIN dd_dtd_deliv dd ON dd.creator_id = a.CREATOR_ID;
+
 
 CREATE OR REPLACE TABLE dianedou.dtd_dec_orders AS
 WITH dd_dec_deliveries AS (SELECT *
@@ -207,21 +238,22 @@ SELECT a.CREATOR_ID                           AS consumer_id
 --        a.end_time_derived::DATE                  AS campaign_end,
 --        IFNULL(COUNT(DISTINCT dd.creator_id), 0)  AS active_cx,
      , IFNULL(COUNT(DISTINCT DELIVERY_ID), 0) AS num_dec_orders
-FROM yvonneliu.dtd_deal_users a --yvonneliu.bts_crm_exposed_cx a
+FROM yvonneliu.master_dtd_survey_cx a --yvonneliu.bts_crm_exposed_cx a
      LEFT JOIN dd_dec_deliveries dd ON dd.creator_id = a.CREATOR_ID
 --                AND dd.created_at::DATE BETWEEN a.start_time_derived::DATE AND a.end_time_derived::DATE
 GROUP BY 1, 2 --, 3, 4, 5
 ;
 
 -- Step 5: Attribute tables for DtD deals users
--- CREATE OR REPLACE TABLE dianedou.dtd_survey_sample_2023 AS
+CREATE OR REPLACE TABLE dianedou.dtd_survey_sample_2023 AS
 WITH sub AS (SELECT u.creator_id                  AS consumer_id
-                  , COUNT(DISTINCT p.campaign_id) AS num_campaigns_redeemed
-                  , SUM(p.num_redemptions)        AS num_redemptions
-             FROM yvonneliu.dtd_deal_users u
+                  , u.used_deal_flag      --- whether the Cx has used DtD deals or not
+                  , ifnull(COUNT(DISTINCT p.campaign_id),0) AS num_campaigns_redeemed
+                  , ifnull(SUM(p.num_redemptions),0)        AS num_redemptions
+             FROM yvonneliu.master_dtd_survey_cx u
                   LEFT JOIN yvonneliu.dtd_2023_master_performance_data p
                             ON u.creator_id = p.creator_id AND p.active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
-             GROUP BY 1
+             GROUP BY 1,2
              ORDER BY 3 DESC)
 
    , dashpass_sub AS (SELECT DISTINCT CONSUMER_ID
@@ -235,6 +267,7 @@ WITH sub AS (SELECT u.creator_id                  AS consumer_id
 
 
 SELECT DISTINCT u.consumer_id,
+                u.used_deal_flag,
                 du.email                                AS email,
                 IFF(u.num_campaigns_redeemed > 0, 1, 0) AS used_promo_y_n,  ---- has this cx redeemed bts promos -- y/n
                 u.num_campaigns_redeemed                AS num_promos_used,
@@ -248,10 +281,27 @@ FROM sub u
                                          e.open_email_within_24h_count + e.open_push_within_24h_count +
                                          e.link_click_email_within_24h_count + e.link_click_push_within_24h_count > 0
      LEFT JOIN dianedou.dtd_dec_orders o ON u.consumer_id = o.consumer_id
+     left join yvonneliu.dtd_dec_1_12_orders dt on u.consumer_id = dt.consumer_id
      LEFT JOIN dashpass_sub dp ON u.consumer_id = dp.consumer_id
      LEFT JOIN public.dimension_users du
                ON du.consumer_id = u.consumer_id AND du.experience = 'doordash' AND du.is_guest = FALSE;
 ;
+
+
+--- get 60K each
+-- What we're imagining:
+-- 60k: Deck the Doorstep Deals Users
+  -- 30k: DashPass users
+select * from dianedou.dtd_survey_sample_2023 where used_deal_flag = 1 and dashpass_y_n = 1 limit 30000;
+  -- 30k: Classic users
+select * from dianedou.dtd_survey_sample_2023 where used_deal_flag = 1 and dashpass_y_n = 0 limit 30000;
+-- 60k: Deck the Doorstep Deals NonUsers (but made at least 1 other purchase in between Dec 1-12)
+  -- 30k: DashPass users
+select * from dianedou.dtd_survey_sample_2023 where used_deal_flag = 0 and dashpass_y_n = 1 limit 30000;
+  -- 30k: Classic users
+select * from dianedou.dtd_survey_sample_2023 where used_deal_flag = 0 and dashpass_y_n = 0 limit 30000;
+
+
 
 
 
