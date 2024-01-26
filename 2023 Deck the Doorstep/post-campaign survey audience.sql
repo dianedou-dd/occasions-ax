@@ -21,14 +21,12 @@ SET crm_start_date = '2023-12-01'::DATE;
 SET crm_end_date = '2023-12-12'::DATE;
 
 -- Step 1: Deck the Doorstep Deals Users
-
 --- Cx who has used DtD deals
 CREATE OR REPLACE TABLE DIANEDOU.dtd_deal_users AS
 WITH has_dd_spend AS (SELECT *
                       FROM yvonneliu.dtd_2023_master_performance_data
                       WHERE all_cx_discount - mx_funded_cx_discount > 0 ---- has DD funded spend
-                        AND active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
-                      )
+                        AND active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE)
 
    , staging AS (SELECT tb1.creator_id
                       , tb1.delivery_id
@@ -46,9 +44,6 @@ WITH has_dd_spend AS (SELECT *
                  HAVING promo_spend > 0)
 SELECT DISTINCT creator_id
 FROM staging;
-
-SELECT COUNT(DISTINCT creator_id)
-FROM dianedou.dtd_deal_users;
 
 GRANT SELECT ON TABLE DIANEDOU.dtd_deal_users TO read_only_users;
 
@@ -220,10 +215,10 @@ WITH dd_dtd_deliv AS (SELECT creator_id
                         AND CREATED_AT::DATE BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
                       GROUP BY 1)
 
-SELECT DISTINCT a.CREATOR_ID AS consumer_id
+SELECT DISTINCT a.consumer_id
               , num_dtd_orders
-FROM yvonneliu.master_dtd_survey_cx a
-     LEFT JOIN dd_dtd_deliv dd ON dd.creator_id = a.CREATOR_ID;
+FROM DIANEDOU.master_dtd_survey_cx a
+     LEFT JOIN dd_dtd_deliv dd ON dd.creator_id = a.consumer_id;
 
 
 CREATE OR REPLACE TABLE dianedou.dtd_dec_orders AS
@@ -231,31 +226,24 @@ WITH dd_dec_deliveries AS (SELECT *
                            FROM PRODDB.PUBLIC.dimension_deliveries
                            WHERE is_filtered_core = TRUE
                              AND is_caviar = 0
-                             AND DATE_TRUNC('month', CREATED_AT::DATE) = '2023-12-01'
-                           GROUP BY 1)
-
-SELECT a.CREATOR_ID                           AS consumer_id
---        a.consumer_bucket,
---        a.consumer_id,
---        a.start_time_derived::DATE                AS campaign_start,
---        a.end_time_derived::DATE                  AS campaign_end,
---        IFNULL(COUNT(DISTINCT dd.creator_id), 0)  AS active_cx,
+                             AND DATE_TRUNC('month', CREATED_AT::DATE) = '2023-12-01')
+SELECT a.consumer_id
      , IFNULL(COUNT(DISTINCT DELIVERY_ID), 0) AS num_dec_orders
-FROM yvonneliu.master_dtd_survey_cx a --yvonneliu.bts_crm_exposed_cx a
-     LEFT JOIN dd_dec_deliveries dd ON dd.creator_id = a.CREATOR_ID
---                AND dd.created_at::DATE BETWEEN a.start_time_derived::DATE AND a.end_time_derived::DATE
-GROUP BY 1, 2 --, 3, 4, 5
+FROM DIANEDOU.master_dtd_survey_cx a
+     LEFT JOIN dd_dec_deliveries dd ON dd.creator_id = a.CONSUMER_ID
+GROUP BY 1
 ;
 
 -- Step 5: Attribute tables for DtD deals users
 CREATE OR REPLACE TABLE dianedou.dtd_survey_sample_2023 AS
-WITH sub AS (SELECT u.creator_id                             AS consumer_id
+WITH sub AS (SELECT u.consumer_id
                   , u.used_deal_flag --- whether the Cx has used DtD deals or not
                   , IFNULL(COUNT(DISTINCT p.campaign_id), 0) AS num_campaigns_redeemed
                   , IFNULL(SUM(p.num_redemptions), 0)        AS num_redemptions
-             FROM yvonneliu.master_dtd_survey_cx u
+             FROM DIANEDOU.master_dtd_survey_cx u
                   LEFT JOIN yvonneliu.dtd_2023_master_performance_data p
-                            ON u.creator_id = p.creator_id AND p.active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
+                            ON u.consumer_id = p.creator_id AND
+                               p.active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
              GROUP BY 1, 2
              ORDER BY 3 DESC)
 
@@ -285,11 +273,13 @@ FROM sub u
                                          e.open_email_within_24h_count + e.open_push_within_24h_count +
                                          e.link_click_email_within_24h_count + e.link_click_push_within_24h_count > 0
      LEFT JOIN dianedou.dtd_dec_orders o ON u.consumer_id = o.consumer_id
-     LEFT JOIN yvonneliu.dtd_dec_1_12_orders dt ON u.consumer_id = dt.consumer_id
+     LEFT JOIN dianedou.dtd_dec_1_12_orders dt ON u.consumer_id = dt.consumer_id
      LEFT JOIN dashpass_sub dp ON u.consumer_id = dp.consumer_id
      LEFT JOIN public.dimension_users du
                ON du.consumer_id = u.consumer_id AND du.experience = 'doordash' AND du.is_guest = FALSE;
 ;
+
+GRANT SELECT ON TABLE dianedou.dtd_survey_sample_2023 TO read_only_users;
 
 
 --- get 60K each
