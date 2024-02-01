@@ -1,3 +1,6 @@
+SET campaign_start = '2023-12-01'::DATE;
+SET campaign_end = '2023-12-12'::DATE;
+
 -- create or replace table yvonneliu.dtd_2023_master_campaign_list as
 CREATE OR REPLACE TABLE DIANEDOU.dtd_2023_master_campaign_list AS
 WITH campaigns AS (
@@ -116,22 +119,78 @@ FROM campaigns
 
 UNION ALL
 
-SELECT NULL AS store_id, mixed_list.VALUE AS campaign_id
-FROM TABLE (FLATTEN(INPUT => ARRAY_CONSTRUCT(
+select *
+from dianedou.dtd_2023_mixed_campaign_list
+;
+
+CREATE OR REPLACE TABLE dianedou.dtd_2023_mixed_campaign_list AS
+SELECT DISTINCT store_id, CAMPAIGN_ID
+FROM edw.invoice.fact_promotion_deliveries dd
+     JOIN TABLE (FLATTEN(INPUT => ARRAY_CONSTRUCT(
     ---- milestones offer $400K budget
         '3f22e607-4065-43a3-bd24-3ee9cb3b87a9',
         '207074d9-0bde-4609-a994-c51d88b7fc21',
         'aa3df3d2-6143-46f1-86e2-ab9e7e24856b',
         'f5814fd1-a49f-4c55-8460-bd55f3cbdee8',
     ---- annual plan
-
+        '7488bf83-d93e-4bc3-a366-30dc7ff3a1e7',
     ---- sign up sale
     ---- tab: https://app.mode.com/editor/doordash/reports/3d1a26326b24/queries/8712183de9b0 (Daily Level: Agg OR & Spend)
         '1b6bb333-cc5d-496a-8d3e-502c161dcda2',
         '4ee36518-9b97-4e21-861b-ff99a3d3f4ca',
         '891c6547-03e4-4ca1-a812-ee86ed8d97e8'))) AS mixed_list
+        ON dd.active_date BETWEEN $campaign_start AND $campaign_end
+        AND dd.campaign_id::VARCHAR = mixed_list.VALUE::VARCHAR
 ;
 
+
+
+CREATE OR REPLACE TABLE DIANEDOU.dtd_2023_cx_segment AS
+WITH dtd_redeemers AS (SELECT DISTINCT creator_id,
+                                       MIN(active_date)            AS first_redemption_date,
+                                       COUNT(DISTINCT delivery_id) AS redemptions
+                       FROM fact_order_discounts_and_promotions_extended p
+                            INNER JOIN (SELECT DISTINCT campaign_id FROM DIANEDOU.dtd_2023_master_campaign_list) s
+                               ON p.campaign_id = s.campaign_id --AND p.store_id = s.store_id
+                       WHERE active_date BETWEEN $campaign_start AND $campaign_end
+                       GROUP BY 1)
+
+   , prior_deliveries AS (SELECT dtd.creator_id
+                               , redemptions
+                               , dtd.first_redemption_date
+                               , MIN(CASE WHEN IS_FIRST_ORDERCART = TRUE THEN dd.active_date END) AS first_order_date_prior
+                               , MAX(dd.active_date)                                              AS last_order_date_prior
+--                                , DATEDIFF('day', last_order_date_prior, first_redemption_date) AS date_difference
+                               , DATEDIFF('day', last_order_date_prior, $campaign_start)          AS date_difference
+                          FROM dimension_deliveries dd
+                               JOIN dtd_redeemers dtd
+                                  ON dd.CREATOR_ID = dtd.CREATOR_ID AND
+                                     dd.active_date < $campaign_start --dtd.first_redemption_date
+                              AND is_filtered_core = 1
+                              AND is_caviar = 0
+                          GROUP BY 1, 2, 3)
+
+SELECT DISTINCT pd.creator_id
+              , first_order_date_prior
+              , last_order_date_prior
+              , first_redemption_date
+              , redemptions
+              , CASE
+    --                     WHEN pd.first_order_date_prior BETWEEN DATEADD(DAY, -29, DATEADD(DAY, -1, pd.first_redemption_date))
+--                         AND DATEADD(DAY, -1, first_redemption_date)
+--                         THEN 'New'
+                    WHEN pd.first_order_date_prior BETWEEN DATEADD(DAY, -29, DATEADD(DAY, -1, $campaign_start))
+                        AND DATEADD(DAY, -1, $campaign_start)
+                        THEN 'New'
+                    WHEN (first_order_date_prior IS NULL) OR (last_order_date_prior IS NULL)
+                        THEN 'activated during campaign' --also considered 'New'
+                    WHEN date_difference <= 28 THEN 'Active'
+                    WHEN date_difference <= 90 THEN 'Dormant'
+                    WHEN date_difference <= 180 THEN 'Churn'
+                    ELSE 'Very churn' END AS lifestage
+
+FROM prior_deliveries pd
+;
 
 CREATE OR REPLACE TABLE DIANEDOU.dtd_2023_master_campaign_list_nv AS
 SELECT DISTINCT c.*
@@ -156,7 +215,7 @@ SELECT DISTINCT c.*
                                            'aa3df3d2-6143-46f1-86e2-ab9e7e24856b',
                                            'f5814fd1-a49f-4c55-8460-bd55f3cbdee8',
                         ---- annual plan
-
+                                           '7488bf83-d93e-4bc3-a366-30dc7ff3a1e7',
                         ---- sign up sale
                         ---- tab: https://app.mode.com/editor/doordash/reports/3d1a26326b24/queries/8712183de9b0 (Daily Level: Agg OR & Spend)
                                            '1b6bb333-cc5d-496a-8d3e-502c161dcda2',
@@ -170,109 +229,154 @@ SELECT DISTINCT c.*
               , ds.business_name
 FROM DIANEDOU.dtd_2023_master_campaign_list c
      LEFT JOIN (SELECT DISTINCT store_id, cohort FROM public.fact_ads_promo_store_categorization) sg
-               ON sg.store_id = c.store_id
+        ON sg.store_id = c.store_id
      LEFT JOIN edw.cng.dimension_new_vertical_store_tags nv
-               ON nv.is_filtered_mp_vertical = 1 AND c.store_id = nv.store_id
-     LEFT JOIN dimension_store ds ON c.store_id = ds.store_id
-;
-;
-CREATE OR REPLACE TABLE DIANEDOU.dtd_2023_cx_segment AS
-WITH dtd_redeemers AS (SELECT DISTINCT creator_id,
-                                       MIN(active_date) AS first_redemption_date,
-                                       count(distinct delivery_id) as redemptions
-                       FROM fact_order_discounts_and_promotions_extended p
-                            INNER JOIN DIANEDOU.dtd_2023_master_campaign_list_nv s
-                                       ON p.campaign_id = s.campaign_id --AND p.store_id = s.store_id
-                       WHERE active_date BETWEEN '2023-12-01'::DATE AND '2023-12-12'::DATE
-                       GROUP BY 1)
-
-   , prior_deliveries AS (SELECT dtd.creator_id
-                               , redemptions
-                               , dtd.first_redemption_date
-                               , MAX(dd.active_date)                                           AS last_order_date_prior
-                               , MIN(dd.active_date)                                           AS first_order_date_prior
-                               , DATEDIFF('day', last_order_date_prior, first_redemption_date) AS date_difference
-                          FROM dimension_deliveries dd
-                               JOIN dtd_redeemers dtd
-                                    ON dd.CREATOR_ID = dtd.CREATOR_ID AND dd.active_date < dtd.first_redemption_date
-                                        AND is_filtered_core = 1
-                                        AND is_caviar = 0
-                          GROUP BY 1, 2, 3)
-
-SELECT distinct pd.creator_id
-     , first_order_date_prior
-     , last_order_date_prior
-     , first_redemption_date
-     , redemptions
-     , CASE
-           WHEN pd.first_order_date_prior BETWEEN DATEADD(DAY, -29, DATEADD(DAY, -1, pd.first_redemption_date)) AND DATEADD(DAY, -1, first_redemption_date)
-               THEN 'New'
-           WHEN date_difference <= 28 THEN 'Active'
-           WHEN date_difference <= 90 THEN 'Dormant'
-           WHEN date_difference <= 180 THEN 'Churn'
-           ELSE 'Very churn' END AS lifestage
-
-FROM prior_deliveries pd
+        ON nv.is_filtered_mp_vertical = 1 AND c.store_id = nv.store_id
+     LEFT JOIN dimension_store ds
+        ON c.store_id = ds.store_id
 ;
 
+CREATE OR REPLACE TABLE dianedou.dtd_2023_cx_level_performance AS
+WITH dp_deliveries AS (SELECT fodp.business_id,
+                              fodp.business_name,
+                              campaign_id,
+                              CAMPAIGN_OR_PROMO_NAME,
+                              fodp.delivery_id,
+                              fodp.ACTIVE_DATE,
+                              DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT,
+                              DISCOUNT_GROUP_MERCHANT_PROMOTION_COMPONENT_AMOUNT
+                       FROM fact_order_discounts_and_promotions fodp
+                            INNER JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                               ON dd.delivery_id = fodp.DELIVERY_ID
+                           AND IS_FILTERED_CORE = TRUE
+                           AND IS_SUBSCRIBED_CONSUMER = TRUE
+                           AND dd.active_date BETWEEN $campaign_start AND $campaign_end)
 
-create or replace table dianedou.dtd_2023_cx_level_performance  as
-with dp_deliveries as (
-  select
-    fodp.business_id,
-    fodp.business_name,
-    campaign_id,
-    CAMPAIGN_OR_PROMO_NAME,
-    fodp.delivery_id,
-    fodp.ACTIVE_DATE,
-    DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT,
-    DISCOUNT_GROUP_MERCHANT_PROMOTION_COMPONENT_AMOUNT
-  from fact_order_discounts_and_promotions fodp
-  inner join PRODDB.PUBLIC.DIMENSION_DELIVERIES dd on dd.delivery_id = fodp.DELIVERY_ID
-  where IS_FILTERED_CORE = true
-    and IS_SUBSCRIBED_CONSUMER = true
-    and dd.active_date >= '2023-11-24'::date
-)
+   , dd_deliveries AS (SELECT dd.*, b.ADJUSTED_COHORT
+                       FROM edw.invoice.fact_promotion_deliveries dd
+                            JOIN DIANEDOU.dtd_2023_cx_segment u
+                               ON u.creator_id = dd.consumer_id
+                           AND dd.active_date BETWEEN $campaign_start AND $campaign_end
+                           AND consumer_discount > 0
+                            JOIN (SELECT DISTINCT ADJUSTED_COHORT, campaign_id, store_id
+                                  FROM DIANEDOU.dtd_2023_master_campaign_list_nv) b
+                               ON b.campaign_id::VARCHAR = dd.campaign_id::VARCHAR
+                           AND b.store_id = dd.store_id)
 
--- , promo_data as (
-    select distinct
-        dd.active_date
-      , c.week as campaign_week
-      , u.creator_id
-      , u.lifestage
-      , b.vertical
-      , b.campaign_id
-      , b.adjusted_cohort
-      , dd.delivery_id
-      , b.store_id
-      , b.vertical_name
-      , b.business_line
-      , b.org
-      , b.store_name
-      , b.business_id
-      , b.business_name
-      , ifnull(sum(ifnull(promotion_fee,0)/100),0) as mx_funded_promo_dollars
-      , ifnull(sum(ifnull(consumer_discount,0)/100),0) as all_cx_discount
-      , ifnull(sum(case when ifnull(promotion_fee,0) > 0 and ifnull(promotion_fee,0) < ifnull(consumer_discount,0) then ifnull(promotion_fee,0)/100
-                when ifnull(promotion_fee,0) > 0 and ifnull(promotion_fee,0) >= ifnull(consumer_discount,0) then ifnull(consumer_discount,0)/100 end),0) as mx_funded_cx_discount
-      , ifnull(sum(case when ifnull(promotion_fee,0) > 0 and ifnull(promotion_fee,0) > ifnull(consumer_discount,0) then (ifnull(promotion_fee,0) - ifnull(consumer_discount,0))/100 end),0) as mx_marketing_fee
-      , ifnull(sum(ifnull(dd.subtotal,0)/100),0) as dd_subtotals
-      , ifnull(sum(case when ifnull(dd.promotion_fee,0) > 0 then ifnull(dd.subtotal,0)/100 end),0) as mx_funded_promo_subtotals
-      , count(distinct dd.delivery_id) as num_redemptions
-      , count(distinct dd.consumer_id) as num_redeemers
-      -- , count(distinct dd.delivery_id) / count(distinct dd.consumer_id) as redemp_per_cx
-      , ifnull(sum(ifnull(DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT,0) / 100),0) as dp_cx_savings
-    from DIANEDOU.dtd_2023_cx_segment u
-    left join edw.invoice.fact_promotion_deliveries dd on u.creator_id = dd.consumer_id
-    join DIANEDOU.dtd_2023_master_campaign_list_nv b
-      on true
---         and b.store_id = dd.store_id
-        and b.campaign_id::varchar = dd.campaign_id::varchar
-    left join static.dtd_2023_calendar c
-      on dd.active_date = c.active_date
-    left join dp_deliveries d
-      on dd.delivery_id = d.delivery_id
-    where dd.active_date >= '2023-11-24'::date
-      and consumer_discount > 0
-    group by 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-    ;
+SELECT DISTINCT dd.active_date
+              , c.week                                             AS campaign_week
+              , u.creator_id
+              , u.lifestage
+              , dd.campaign_id
+              , dd.delivery_id
+              , dd.store_id
+--               , dd.vertical
+--               , dd.vertical_name
+--               , dd.business_line
+--               , dd.org
+--               , dd.store_name
+              , dd.adjusted_cohort
+              , dd.business_id
+              , dd.business_name
+              , IFNULL(SUM(IFNULL(promotion_fee, 0) / 100), 0)     AS mx_funded_promo_dollars
+              , IFNULL(SUM(IFNULL(consumer_discount, 0) / 100), 0) AS all_cx_discount
+              , IFNULL(SUM(CASE
+                               WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                    IFNULL(dd.promotion_fee, 0) < IFNULL(dd.consumer_discount, 0)
+                                   THEN IFNULL(dd.promotion_fee, 0) / 100
+                               WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                    IFNULL(dd.promotion_fee, 0) >= IFNULL(dd.consumer_discount, 0)
+                                   THEN IFNULL(dd.consumer_discount, 0) / 100 END),
+                       0)                                          AS mx_funded_cx_discount
+              , IFNULL(SUM(CASE
+                               WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                    IFNULL(dd.promotion_fee, 0) > IFNULL(dd.consumer_discount, 0)
+                                   THEN (IFNULL(dd.promotion_fee, 0) - IFNULL(dd.consumer_discount, 0)) / 100 END),
+                       0)                                          AS mx_marketing_fee
+              , IFNULL(SUM(IFNULL(dd.subtotal, 0) / 100), 0)       AS dd_subtotals
+              , IFNULL(SUM(CASE WHEN IFNULL(dd.promotion_fee, 0) > 0 THEN IFNULL(dd.subtotal, 0) / 100 END),
+                       0)                                          AS mx_funded_promo_subtotals
+--               , COUNT(DISTINCT dd.delivery_id)                     AS num_redemptions
+--               , COUNT(DISTINCT dd.consumer_id)                     AS num_redeemers
+--               , count(distinct dd.delivery_id) / count(distinct dd.consumer_id) as redemp_per_cx
+              , IFNULL(SUM(IFNULL(d.DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT, 0) / 100),
+                       0)                                          AS dp_cx_savings
+FROM DIANEDOU.dtd_2023_cx_segment u
+     LEFT JOIN dd_deliveries dd
+        ON u.creator_id = dd.consumer_id
+     LEFT JOIN DIANEDOU.dtd_2023_master_campaign_list_nv b
+        ON b.campaign_id::VARCHAR = dd.campaign_id::VARCHAR
+    AND b.store_id = dd.store_id
+     JOIN static.dtd_2023_calendar c
+        ON dd.active_date = c.active_date
+     LEFT JOIN dp_deliveries d
+        ON dd.delivery_id = d.delivery_id
+
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 --, 11, 12, 13, 14, 15
+;
+
+SELECT COUNT(DISTINCT creator_id), COUNT(DISTINCT delivery_id) --4.25M, 5.74M
+FROM dianedou.dtd_2023_cx_level_performance
+-- group by 1
+;
+
+SELECT COUNT(DISTINCT creator_id), COUNT(DISTINCT delivery_id) --4.18M, 5.52M
+FROM yvonneliu.dtd_2023_master_performance_data
+WHERE ACTIVE_DATE BETWEEN $campaign_start AND $campaign_end
+LIMIT 10;
+
+
+GRANT SELECT ON TABLE static.dtd_2023_cx_segment_performance TO read_only_users;
+
+
+CREATE OR REPLACE TABLE static.dtd_2023_cx_segment_performance AS
+SELECT lifestage
+     , COUNT(DISTINCT delivery_id)       AS redemptions
+     , redemptions / (SELECT COUNT(DISTINCT delivery_id) FROM dianedou.dtd_2023_cx_level_performance) *
+       100                               AS redemp_perc
+     , COUNT(DISTINCT CASE
+                          WHEN adjusted_cohort = 'SMB' THEN delivery_id
+                          ELSE NULL END) AS SMB_redemptions
+     , COUNT(DISTINCT CASE
+                          WHEN adjusted_cohort = 'NV' THEN delivery_id
+                          ELSE NULL END) AS NV_redemptions
+     , COUNT(DISTINCT CASE
+                          WHEN adjusted_cohort = 'Mixed ENT/SMB' THEN delivery_id
+                          ELSE NULL END) AS MixedENTSMB_redemptions
+     , COUNT(DISTINCT CASE
+                          WHEN adjusted_cohort = 'ENT Rx' THEN delivery_id
+                          ELSE NULL END) AS ENTRx_redemptions
+
+     , SUM(IFNULL(all_cx_discount, 0))   AS all_cx_discount
+     , SUM(CASE
+               WHEN adjusted_cohort = 'SMB' THEN IFNULL(all_cx_discount, 0)
+               ELSE 0 END)               AS SMB_cx_discount
+     , SUM(CASE
+               WHEN adjusted_cohort = 'NV' THEN IFNULL(all_cx_discount, 0)
+               ELSE 0 END)               AS NV_cx_discount
+     , SUM(CASE
+               WHEN adjusted_cohort = 'Mixed ENT/SMB' THEN IFNULL(all_cx_discount, 0)
+               ELSE 0 END)               AS MixedENTSMB_cx_discount
+     , SUM(CASE
+               WHEN adjusted_cohort = 'ENT Rx' THEN IFNULL(all_cx_discount, 0)
+               ELSE 0 END)               AS ENTRx_cx_discount
+
+FROM dianedou.dtd_2023_cx_level_performance
+WHERE active_date BETWEEN '2023-12-01' AND '2023-12-12'
+GROUP BY 1
+ORDER BY 2;
+
+SELECT lifestage,
+       redemptions,
+       redemp_perc,
+       SMB_redemptions,
+       NV_redemptions,
+       MixedENTSMB_redemptions,
+       ENTRx_redemptions,
+       all_cx_discount,
+       SMB_cx_discount,
+       NV_cx_discount,
+       MixedENTSMB_cx_discount,
+       ENTRx_cx_discount
+FROM static.dtd_2023_cx_segment_performance
+LIMIT 10;

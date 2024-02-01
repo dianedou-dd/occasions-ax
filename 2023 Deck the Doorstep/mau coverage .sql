@@ -1,6 +1,6 @@
-SET snapshot_date = '2023-12-12'::DATE;
+SET snapshot_date = '2023-12-01'::DATE;
 
-create or replace table dianedou.dtd_mau_coverage as
+create or replace table DIANEDOU.dtd_2023_mau_coverage as
 
 with mau as (
     select distinct creator_id
@@ -42,3 +42,21 @@ store_base as (
     group by 1
     order by 1
 ;
+
+GRANT SELECT ON TABLE dianedou.dtd_2023_mau_coverage TO read_only_users;
+
+create or replace table static.dtd_2023_mau_coverage_perc as
+with ttl_mau as (
+    select distinct creator_id
+    from dimension_deliveries dd
+    where dd.is_filtered_core = true
+      and dd.active_date between $snapshot_date -29 and $snapshot_date - 1
+      and country_id = 1
+)
+
+select base.*
+, base.MAUs / (select count (distinct CREATOR_ID) from ttl_mau) as coverage_perc
+
+from DIANEDOU.dtd_2023_mau_coverage base
+order by 1;
+
