@@ -4,7 +4,7 @@ SET campaign_end = '2023-12-12'::DATE;
 CREATE OR REPLACE TABLE dianedou.dtd_2023_non_tested_campaign_impact AS
 WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id
                   FROM edw.invoice.fact_promotion_deliveries
-                  WHERE active_date >= $campaign_start - 30 ---- past 30 days' gov
+                  WHERE active_date BETWEEN $campaign_start - 31 and $campaign_start - 1 ---- past 30 days' gov
                   GROUP BY 2)
 
    , agg_performance AS (SELECT ACTIVE_DATE,
@@ -31,11 +31,13 @@ WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id
                                , a.vertical
                                , a.adjusted_cohort
 
-                               , IFF(b.avg_gov > 0, b.avg_gov, CASE WHEN vertical = 'Other' THEN 36.12
+                               , IFF(b.avg_gov > 0, b.avg_gov, CASE
+                                                                   WHEN vertical = 'Other' THEN 36.12
                                                                    ELSE 37.48 END) AS adjusted_aov_step1
-                               , IFNULL(CASE WHEN adjusted_aov_step1 > 83 THEN 83
-                                             WHEN adjusted_aov_step1 < 30 THEN 30
-                                             ELSE adjusted_aov_step1 END, 0)       AS adjusted_aov
+                               , IFNULL(CASE
+                                            WHEN adjusted_aov_step1 > 83 THEN 83
+                                            WHEN adjusted_aov_step1 < 30 THEN 30
+                                            ELSE adjusted_aov_step1 END, 0)        AS adjusted_aov
 
                                , CASE
                                      WHEN vertical = 'Other' THEN (
@@ -65,61 +67,60 @@ SELECT active_date,
        SUM(incr_gmv)    AS incr_gmv,
        SUM(incr_orders) AS incr_orders
 FROM staging
+WHERE campaign_id NOT IN (SELECT DISTINCT campaign_id FROM yvonneliu.evergreen_reskin_campaign_id_list_dtd_2023)
 GROUP BY 1
 ;
+
 GRANT SELECT ON TABLE dianedou.dtd_2023_non_tested_campaign_impact TO read_only_users;
 
-
 CREATE OR REPLACE TABLE dianedou.dtd_2023_tested_campaign_impact AS
-with raw as (
-select * from yvonneliu.incr_gmv_reskin_daily_dashmart_50trydm
-where last_updated = (select max(last_updated) from yvonneliu.incr_gmv_reskin_daily_dashmart_50trydm)
+WITH raw AS (SELECT *
+             FROM yvonneliu.incr_gmv_reskin_daily_dashmart_50trydm
+             WHERE last_updated = (SELECT MAX(last_updated) FROM yvonneliu.incr_gmv_reskin_daily_dashmart_50trydm)
 
-union
+             UNION
 
-select * from yvonneliu.incr_gmv_reskin_daily_dashmart_super10eps
-where last_updated = (select max(last_updated) from yvonneliu.incr_gmv_reskin_daily_dashmart_super10eps)
+             SELECT *
+             FROM yvonneliu.incr_gmv_reskin_daily_dashmart_super10eps
+             WHERE last_updated = (SELECT MAX(last_updated) FROM yvonneliu.incr_gmv_reskin_daily_dashmart_super10eps)
 
-union
+             UNION
 
-select * from yvonneliu.incr_gmv_reskin_daily_grocery --- done
-where last_updated = (select max(last_updated) from yvonneliu.incr_gmv_reskin_daily_grocery)
-),
+             SELECT *
+             FROM yvonneliu.incr_gmv_reskin_daily_grocery --- done
+             WHERE last_updated = (SELECT MAX(last_updated) FROM yvonneliu.incr_gmv_reskin_daily_grocery)),
 
 
-sub as (select
+     sub AS (SELECT SUM(incr_gmv / 2)  AS incremental_gmv,
+                    SUM(volume_3m / 2) AS incremental_orders
 
-sum(incr_gmv/2) as incremental_gmv,
-sum(volume_3m/2) as incremental_orders
+             FROM raw
+             WHERE calendar_date BETWEEN '2023-12-01' AND '2023-12-12'
 
-from raw
-where calendar_date between '2023-12-01' and '2023-12-12'
+             UNION ALL
 
-union all
+             SELECT incr_gmv / 2, incr_orders / 2
+             FROM dianedou.dtd_milestone_lift)
 
-select incr_gmv/2, incr_orders/2
-from dianedou.dtd_milestone_lift )
-
-select sum(incremental_gmv) as inc_gmv , sum(INCRemental_ORDERS) as inc_orders from sub;
+SELECT SUM(incremental_gmv) AS inc_gmv, SUM(INCRemental_ORDERS) AS inc_orders
+FROM sub;
 
 GRANT SELECT ON TABLE dianedou.dtd_2023_tested_campaign_impact TO read_only_users;
 
-SELECT *
-FROM dianedou.dtd_2023_topup_campaign_impact
-LIMIT 10;
-
 CREATE OR REPLACE TABLE dianedou.dtd_2023_topup_campaign_impact AS
-with staging as (select *,
-greatest(incr_gmv/2,0) as increm_gmv,
-greatest(incr_volume/2,0) as increm_orders
- from yvonneliu.dtd_top_up_daily where last_updated = (select max(last_updated) from yvonneliu.dtd_top_up_daily))
+WITH staging AS (SELECT *,
+                        GREATEST(incr_gmv / 2, 0)    AS increm_gmv,
+                        GREATEST(incr_volume / 2, 0) AS increm_orders
+                 FROM yvonneliu.dtd_top_up_daily
+                 WHERE last_updated = (SELECT MAX(last_updated) FROM yvonneliu.dtd_top_up_daily))
 
-select calendar_date
-, 14290000/12/2 as incremental_gmv_goal
+SELECT calendar_date
+     , 14290000 / 12 / 2                           AS incremental_gmv_goal
 -- , sum(increm_gmv) as incremental_gmv
-, sum(increm_orders*36/2) as incremental_gmv
-, sum(increm_orders) as incremental_orders
-, div0(incremental_gmv,incremental_gmv_goal) as pacing
-from staging group by 1,2;
+     , SUM(increm_orders * 36 / 2)                 AS incremental_gmv
+     , SUM(increm_orders)                          AS incremental_orders
+     , DIV0(incremental_gmv, incremental_gmv_goal) AS pacing
+FROM staging
+GROUP BY 1, 2;
 
-GRANT SELECT ON TABLE dianedou.dtd_2023_topup_campaign_impact  TO read_only_users;
+GRANT SELECT ON TABLE dianedou.dtd_2023_topup_campaign_impact TO read_only_users;
