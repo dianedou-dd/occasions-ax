@@ -1,7 +1,55 @@
 SET campaign_start = '2024-02-09'::DATE;
 SET campaign_end = '2024-02-11'::DATE;
 
-CREATE OR REPLACE TABLE dianedou.superbowl_2024_cx_level_performance AS
+CREATE OR REPLACE TABLE DIANEDOU.superbowl_2024_cx_segment AS
+WITH redeemers AS (SELECT DISTINCT creator_id,
+                                   MIN(active_date)            AS first_redemption_date,
+                                   COUNT(DISTINCT delivery_id) AS redemptions
+                   FROM fact_order_discounts_and_promotions_extended p
+                        INNER JOIN (SELECT DISTINCT "Campaign ID" FROM DIANEDOU.Superbowl_2024_Campaign_ID_v2) s
+                           ON p.campaign_id = s."Campaign ID" --AND p.store_id = s.store_id
+                   WHERE active_date BETWEEN $campaign_start AND $campaign_end
+                   GROUP BY 1)
+
+   , prior_deliveries AS (SELECT red.creator_id
+                               , redemptions
+                               , red.first_redemption_date
+                               , MIN(CASE WHEN IS_FIRST_ORDERCART = TRUE THEN dd.active_date END) AS first_order_date_prior
+                               , MAX(dd.active_date)                                              AS last_order_date_prior
+--                                , DATEDIFF('day', last_order_date_prior, first_redemption_date) AS date_difference
+                               , DATEDIFF('day', last_order_date_prior, $campaign_start)          AS date_difference
+                          FROM dimension_deliveries dd
+                               JOIN redeemers red
+                                  ON dd.CREATOR_ID = red.CREATOR_ID AND
+                                     dd.active_date < $campaign_start --dtd.first_redemption_date
+                              AND is_filtered_core = 1
+                              AND is_caviar = 0
+                          GROUP BY 1, 2, 3)
+
+SELECT DISTINCT pd.creator_id
+              , first_order_date_prior
+              , last_order_date_prior
+              , first_redemption_date
+              , redemptions
+              , CASE
+    --                     WHEN pd.first_order_date_prior BETWEEN DATEADD(DAY, -29, DATEADD(DAY, -1, pd.first_redemption_date))
+--                         AND DATEADD(DAY, -1, first_redemption_date)
+--                         THEN 'New'
+                    WHEN pd.first_order_date_prior BETWEEN DATEADD(DAY, -29, DATEADD(DAY, -1, $campaign_start))
+                        AND DATEADD(DAY, -1, $campaign_start)
+                        THEN 'New'
+                    WHEN (first_order_date_prior IS NULL) OR (last_order_date_prior IS NULL)
+                        THEN 'activated during campaign' --also considered 'New'
+                    WHEN date_difference <= 28 THEN 'Active'
+                    WHEN date_difference <= 90 THEN 'Dormant'
+                    WHEN date_difference <= 180 THEN 'Churn'
+                    ELSE 'Very churn' END AS lifestage
+
+FROM prior_deliveries pd
+;
+
+
+CREATE OR REPLACE TABLE dianedou.superbowl_2024_cx_level_performance_v2 AS
 
 WITH dp_deliveries AS (SELECT fodp.business_id,
                               fodp.business_name,
@@ -12,96 +60,104 @@ WITH dp_deliveries AS (SELECT fodp.business_id,
                               DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT,
                               DISCOUNT_GROUP_MERCHANT_PROMOTION_COMPONENT_AMOUNT
                        FROM fact_order_discounts_and_promotions fodp
-                       INNER JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                            INNER JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
                                ON dd.delivery_id = fodp.DELIVERY_ID
                            AND IS_FILTERED_CORE = TRUE
                            AND IS_SUBSCRIBED_CONSUMER = TRUE
                            AND dd.active_date BETWEEN $campaign_start AND $campaign_end
-                       INNER JOIN dianedou.Superbowl_2024_Campaign_ID id
-                          on fodp.CAMPAIGN_ID = id."Campaign ID"
-                      )
+                            INNER JOIN dianedou.Superbowl_2024_Campaign_ID_v2 id
+                               ON fodp.CAMPAIGN_ID = id."Campaign ID")
 
    , dd_deliveries AS (SELECT dd.*
-                              , b."Cx Savings Category" as cx_savings_category
-                              , b."% DP Funded" as dp_cofunding_perc
+                            , b."Cx Savings Category" AS cx_savings_category
+                            , b."% DP Funded"         AS dp_cofunding_perc
                        FROM edw.invoice.fact_promotion_deliveries dd
                                 -- JOIN DIANEDOU.dtd_2023_cx_segment u
                                 --   ON u.creator_id = dd.consumer_id
 
-                            JOIN dianedou.Superbowl_2024_Campaign_ID b
+                            JOIN dianedou.Superbowl_2024_Campaign_ID_v2 b
                                ON dd.active_date BETWEEN $campaign_start AND $campaign_end
                            AND dd.consumer_discount > 0
                            AND dd.campaign_id::VARCHAR = b."Campaign ID")
 
 
-, cx_level_perf as (SELECT DISTINCT dd.active_date
+   , cx_level_perf AS (SELECT DISTINCT dd.active_date
 --               , c.week                                             AS campaign_week
-                                  , dd.CONSUMER_ID
---               , u.lifestage
-                                  , dd.campaign_id
-                                  , dd.delivery_id
-                                  , dd.store_id
+                                     , dd.CONSUMER_ID
+                                     , dd.campaign_id
+                                     , dd.delivery_id
+                                     , dd.store_id
 --               , b.vertical
 --               , dd.vertical_name
 --               , dd.business_line
 --               , dd.org
 --               , dd.store_name
-                                  , dd.cx_savings_category
-                                  , dd.dp_cofunding_perc
-                                  , dd.business_id
-                                  , dd.business_name
-                                  , dd.GOV
-                                  , IFNULL(SUM(IFNULL(promotion_fee, 0) / 100), 0)     AS mx_funded_promo_dollars
-                                  , IFNULL(SUM(IFNULL(consumer_discount, 0) / 100), 0) AS all_cx_discount
-                                  , IFNULL(SUM(CASE
-                                                   WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
-                                                        IFNULL(dd.promotion_fee, 0) < IFNULL(dd.consumer_discount, 0)
-                                                       THEN IFNULL(dd.promotion_fee, 0) / 100
-                                                   WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
-                                                        IFNULL(dd.promotion_fee, 0) >= IFNULL(dd.consumer_discount, 0)
-                                                       THEN IFNULL(dd.consumer_discount, 0) / 100 END),
-                                           0)                                          AS mx_funded_cx_discount
-                                  , IFNULL(SUM(CASE
-                                                   WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
-                                                        IFNULL(dd.promotion_fee, 0) > IFNULL(dd.consumer_discount, 0)
-                                                       THEN
-                                                       (IFNULL(dd.promotion_fee, 0) - IFNULL(dd.consumer_discount, 0)) /
-                                                       100 END),
-                                           0)                                          AS mx_marketing_fee
-                                  , IFNULL(SUM(IFNULL(dd.subtotal, 0) / 100), 0)       AS dd_subtotals
-                                  , IFNULL(
+                                     , dd.cx_savings_category
+                                     , dd.dp_cofunding_perc
+                                     , dd.business_id
+                                     , dd.business_name
+                                     , dd.GOV
+                                     , IFNULL(SUM(IFNULL(promotion_fee, 0) / 100), 0)     AS mx_funded_promo_dollars
+                                     , IFNULL(SUM(IFNULL(consumer_discount, 0) / 100), 0) AS all_cx_discount
+                                     , IFNULL(SUM(CASE
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) < IFNULL(dd.consumer_discount, 0)
+                                                          THEN IFNULL(dd.promotion_fee, 0) / 100
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) >=
+                                                           IFNULL(dd.consumer_discount, 0)
+                                                          THEN IFNULL(dd.consumer_discount, 0) / 100 END),
+                                              0)                                          AS mx_funded_cx_discount
+                                     , IFNULL(SUM(CASE
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) > IFNULL(dd.consumer_discount, 0)
+                                                          THEN
+                                                          (IFNULL(dd.promotion_fee, 0) - IFNULL(dd.consumer_discount, 0)) /
+                                                          100 END),
+                                              0)                                          AS mx_marketing_fee
+                                     , IFNULL(SUM(IFNULL(dd.subtotal, 0) / 100), 0)       AS dd_subtotals
+                                     , IFNULL(
             SUM(CASE WHEN IFNULL(dd.promotion_fee, 0) > 0 THEN IFNULL(dd.subtotal, 0) / 100 END),
-            0)                                                                         AS mx_funded_promo_subtotals
+            0)                                                                            AS mx_funded_promo_subtotals
 --               , COUNT(DISTINCT dd.delivery_id)                     AS num_redemptions
 --               , COUNT(DISTINCT dd.consumer_id)                     AS num_redeemers
 --               , count(distinct dd.delivery_id) / count(distinct dd.consumer_id) as redemp_per_cx
-                                  , IFNULL(SUM(IFNULL(d.DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT, 0) / 100),
-                                           0)                                          AS dp_cx_savings
-                                  , dp_cx_savings * dp_cofunding_perc /100 as dd_funded_dp_cx_savings
+                                     , IFNULL(SUM(IFNULL(d.DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT, 0) / 100),
+                                              0)                                          AS dp_cx_savings
+                                     , dp_cx_savings * dp_cofunding_perc / 100            AS dd_funded_dp_cx_savings
 
-                    FROM dd_deliveries dd
-                         LEFT JOIN dp_deliveries d
-                            ON dd.delivery_id = d.delivery_id
+                       FROM dd_deliveries dd
+                            LEFT JOIN dp_deliveries d
+                               ON dd.delivery_id = d.delivery_id
 
-                    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 --, 11, 12 --, 13, 14, 15
+                       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 --, 11, 12 --, 13, 14, 15
 )
 
-select *
-from cx_level_perf
+SELECT *
+FROM cx_level_perf dd
+
 
 ;
+CREATE OR REPLACE TABLE dianedou.superbowl_2024_cx_level_performance_v2_ux_segment AS
+SELECT dd.*,
+       u.lifestage
 
-GRANT SELECT ON TABLE dianedou.superbowl_2024_cx_level_performance  TO read_only_users;
+From dianedou.superbowl_2024_cx_level_performance_v2 dd
+LEFT JOIN DIANEDOU.superbowl_2024_cx_segment u
+ON u.creator_id = dd.consumer_id
+;
 
-CREATE OR REPLACE TABLE dianedou.superbowl_2024_agg_performance  AS
+GRANT SELECT ON TABLE DIANEDOU.superbowl_2024_cx_segment TO read_only_users;
+
+CREATE OR REPLACE TABLE dianedou.superbowl_2024_agg_performance_v2 AS
 WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id
                   FROM edw.invoice.fact_promotion_deliveries
-                  WHERE active_date BETWEEN $campaign_start - 31 and $campaign_start - 1 ---- past 30 days' gov
+                  WHERE active_date BETWEEN $campaign_start - 31 AND $campaign_start - 1 ---- past 30 days' gov
                   GROUP BY 2)
 
    , agg_performance AS (SELECT ACTIVE_DATE,
                                 CAMPAIGN_ID,
-                                cx_savings_category as vertical,
+                                cx_savings_category                  AS vertical,
 --                                 adjusted_cohort,
                                 SUM(MX_FUNDED_PROMO_DOLLARS)         AS MX_FUNDED_PROMO_DOLLARS,
                                 SUM(ALL_CX_DISCOUNT)                 AS ALL_CX_DISCOUNT,
@@ -111,11 +167,11 @@ WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id
                                 SUM(MX_FUNDED_PROMO_SUBTOTALS)       AS MX_FUNDED_PROMO_SUBTOTALS,
                                 SUM(DP_CX_SAVINGS)                   AS DP_CX_SAVINGS,
                                 COUNT(DISTINCT delivery_id)          AS num_redemptions,
-                                COUNT(DISTINCT CONSUMER_ID)           AS num_redeemers,
+                                COUNT(DISTINCT CONSUMER_ID)          AS num_redeemers,
                                 num_redemptions / num_redeemers      AS redemp_per_cx,
                                 IFNULL(SUM(IFNULL(gov, 0) / 100), 0) AS total_gov,
                                 DIV0(total_gov, num_redemptions)     AS avg_gov
-                         FROM dianedou.superbowl_2024_cx_level_performance
+                         FROM dianedou.superbowl_2024_cx_level_performance_v2
                          GROUP BY 1, 2, 3)
 
    , staging AS (SELECT DISTINCT a.active_date
@@ -143,7 +199,7 @@ WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id
                                                (all_cx_discount / num_redemptions) * 0.46 * adjusted_aov ---- Big G GOV
                                          )
                                      ELSE 0 END                                    AS incr_gmv_raw
-                               , incr_gmv_raw                                  AS incr_gmv
+                               , incr_gmv_raw                                      AS incr_gmv
                                , DIV0(incr_gmv, adjusted_aov)                      AS incr_orders
                                , b.avg_gov
                                , mx_funded_cx_discount
@@ -162,4 +218,94 @@ FROM staging
 GROUP BY 1
 ;
 
-GRANT SELECT ON TABLE dianedou.superbowl_2024_agg_performance TO read_only_users;
+GRANT SELECT ON TABLE dianedou.superbowl_2024_cx_level_performance_v3 TO read_only_users;
+
+CREATE OR REPLACE TABLE dianedou.superbowl_2024_cx_level_performance_v3 AS
+
+WITH dp_deliveries AS (SELECT fodp.business_id,
+                              fodp.business_name,
+                              campaign_id,
+                              CAMPAIGN_OR_PROMO_NAME,
+                              fodp.delivery_id,
+                              fodp.ACTIVE_DATE,
+                              DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT,
+                              DISCOUNT_GROUP_MERCHANT_PROMOTION_COMPONENT_AMOUNT
+                       FROM fact_order_discounts_and_promotions fodp
+                            INNER JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                               ON dd.delivery_id = fodp.DELIVERY_ID
+                           AND IS_FILTERED_CORE = TRUE
+                           AND IS_SUBSCRIBED_CONSUMER = TRUE
+                           AND dd.active_date BETWEEN $campaign_start AND $campaign_end
+                            INNER JOIN dianedou.Superbowl_2024_Campaign_ID_v2 id
+                               ON fodp.CAMPAIGN_ID = id."Campaign ID"),
+
+     dd_deliveries AS (SELECT dd.*
+                            , b."Cx Savings Category" AS cx_savings_category
+                            , b."% DP Funded"         AS dp_cofunding_perc
+                       FROM edw.invoice.fact_promotion_deliveries dd
+                                -- JOIN DIANEDOU.dtd_2023_cx_segment u
+                                --   ON u.creator_id = dd.consumer_id
+
+                            JOIN dianedou.Superbowl_2024_Campaign_ID_v2 b
+                               ON dd.active_date BETWEEN $campaign_start AND $campaign_end
+                           AND dd.consumer_discount > 0
+                           AND dd.campaign_id::VARCHAR = b."Campaign ID")
+        ,
+     cx_level_perf AS (SELECT DISTINCT dd.active_date
+--               , c.week                                             AS campaign_week
+                                     , dd.CONSUMER_ID
+--               , u.lifestage
+                                     , dd.campaign_id
+                                     , dd.delivery_id
+                                     , dd.store_id
+--               , b.vertical
+--               , dd.vertical_name
+--               , dd.business_line
+--               , dd.org
+--               , dd.store_name
+                                     , dd.cx_savings_category
+                                     , dd.dp_cofunding_perc
+                                     , dd.business_id
+                                     , dd.business_name
+                                     , dd.GOV
+                                     , dd.IS_SUBSCRIBED_CONSUMER
+                                     , IFNULL(SUM(IFNULL(promotion_fee, 0) / 100), 0)                       AS mx_funded_promo_dollars
+                                     , IFNULL(SUM(IFNULL(consumer_discount, 0) / 100), 0)                   AS all_cx_discount
+                                     , IFNULL(SUM(CASE
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) < IFNULL(dd.consumer_discount, 0)
+                                                          THEN IFNULL(dd.promotion_fee, 0) / 100
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) >=
+                                                           IFNULL(dd.consumer_discount, 0)
+                                                          THEN IFNULL(dd.consumer_discount, 0) / 100 END),
+                                              0)                                                            AS mx_funded_cx_discount_
+                                     , IFNULL(SUM(CASE
+                                                      WHEN IFNULL(dd.promotion_fee, 0) > 0 AND
+                                                           IFNULL(dd.promotion_fee, 0) > IFNULL(dd.consumer_discount, 0)
+                                                          THEN
+                                                          (IFNULL(dd.promotion_fee, 0) - IFNULL(dd.consumer_discount, 0)) /
+                                                          100 END),
+                                              0)                                                            AS mx_marketing_fee
+                                     , IFNULL(SUM(IFNULL(dd.subtotal, 0) / 100), 0)                         AS dd_subtotals
+                                     , IFNULL(
+                 SUM(CASE WHEN IFNULL(dd.promotion_fee, 0) > 0 THEN IFNULL(dd.subtotal, 0) / 100 END),
+                 0)                                                                                         AS mx_funded_promo_subtotals
+--               , COUNT(DISTINCT dd.delivery_id)                     AS num_redemptions
+--               , COUNT(DISTINCT dd.consumer_id)                     AS num_redeemers
+--               , count(distinct dd.delivery_id) / count(distinct dd.consumer_id) as redemp_per_cx
+                                     , IFNULL(SUM(IFNULL(d.DISCOUNTS_PROMOTION_SERVICE_SOURCED_AMOUNT, 0) / 100),
+                                              0)                                                            AS dp_cx_savings
+                                     , dp_cx_savings * dp_cofunding_perc / 100                              AS dd_funded_dp_cx_savings
+                                     , (all_cx_discount - MX_FUNDED_CX_DISCOUNT_) * dp_cofunding_perc / 100 AS dd_funded_dp_cx_savings_v2
+
+                       FROM dd_deliveries dd
+                            LEFT JOIN dp_deliveries d
+                               ON dd.delivery_id = d.delivery_id
+
+                       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 --, 12 --, 13, 14, 15
+     )
+
+SELECT *
+FROM cx_level_perf
+;
