@@ -48,8 +48,6 @@ SELECT DISTINCT pd.creator_id
 FROM prior_deliveries pd
 ;
 
-
-
 CREATE OR REPLACE TABLE dianedou.vday_2024_cx_level_performance AS
 WITH dp_deliveries AS (SELECT fodp.business_id,
                               fodp.business_name,
@@ -133,6 +131,8 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 select * from dianedou.vday_2024_cx_level_performance limit 100;
 
 grant select on table dianedou.vday_2024_cx_level_performance to read_only_users;
+
+grant select on table dianedou.vday_2024_all_campaign_impact to read_only_users;
 
 CREATE OR REPLACE TABLE dianedou.vday_2024_all_campaign_impact AS
 WITH calc_aov AS (SELECT AVG(IFNULL(gov / 100, 0)) AS avg_gov, campaign_id

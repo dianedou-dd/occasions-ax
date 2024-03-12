@@ -1667,32 +1667,69 @@ SELECT DISTINCT AISLE_NAME_L2
 FROM dianedou.easter_2024_item_list
 ;
 
----easter day top merchants
+---easter day top NV Mx during last easter
 WITH sub AS (SELECT i.*
              FROM edw.cng.fact_non_rx_order_item_details i
                   JOIN dimension_deliveries dd
                      ON i.DELIVERY_ID = dd.DELIVERY_ID
                  AND is_filtered_core = 1
+                 AND COUNTRY_ID = 1
                  AND i.AISLE_NAME_L2 IN (SELECT DISTINCT AISLE_NAME_L2 FROM dianedou.easter_2024_item_list_p1)
                  AND i.delivery_created_at::DATE = '2023-04-09')
 
-SELECT DELIVERY_CREATED_AT::DATE AS dt,
+, top_ten as (SELECT DELIVERY_CREATED_AT::DATE AS dt,
        BUSINESS_NAME,
-       COUNT(DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub)
+       COUNT(DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) as volume_share
 FROM sub
 GROUP BY ALL
-ORDER BY 3 DESC, 2;
+ORDER BY 3 DESC, 2
+limit 10)
 
+-- select distinct BUSINESS_ID
+-- , sub.BUSINESS_NAME
+-- , volume_share
+-- from sub
+-- join top_ten on sub.BUSINESS_NAME = top_ten.BUSINESS_NAME
+SELECT * FROM TOP_TEN
+
+;
+---TOP 10 Rx during last easter
 WITH sub AS (SELECT *
              FROM dimension_deliveries dd
              WHERE TRUE
                AND is_filtered_core = 1
                AND is_caviar = 0
+               AND COUNTRY_ID = 1
                AND ACTIVE_DATE::DATE = '2023-04-09')
 
-SELECT dd.BUSINESS_NAME
+, cng as (
+    SELECT DISTINCT
+--     store_id
+    business_id
+    ,business_name
+    ,org
+    , case when org IN ('Drive','Other') then org
+        when org IN ('Retail','CnGnA') then vertical_name
+        end as cng_business_line
+    from edw.cng.dimension_new_vertical_store_tags
+
+    )
+
+, TOP_TEN AS (SELECT dd.BUSINESS_NAME
+--      , dd.BUSINESS_ID
      , COUNT(DISTINCT dd.DELIVERY_ID) AS volume
-     , COUNT(DISTINCT dd.DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub)
+     , COUNT(DISTINCT dd.DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) AS volume_share
 FROM sub dd
+left join cng on cng.BUSINESS_ID = dd.BUSINESS_ID
+where CNG.BUSINESS_ID IS NULL
 GROUP BY ALL
 ORDER BY 2 DESC
+LIMIT 10)
+
+-- select distinct BUSINESS_ID
+-- , sub.BUSINESS_NAME
+-- , volume_share
+-- from sub
+-- join top_ten on sub.BUSINESS_NAME = top_ten.BUSINESS_NAME
+
+SELECT * FROM TOP_TEN;

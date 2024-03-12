@@ -114,10 +114,6 @@ FROM daily_vol;
 
 GRANT SELECT ON TABLE dianedou.flower_daily_volume TO READ_ONLY_USERS;
 
-SELECT *
-FROM dianedou.flower_daily_volume
-ORDER BY 1;
-
 ---active DP vs classic users % placed 1+ flower orders
 WITH flower_table AS (SELECT ds.store_id,
                              ds.name,
@@ -220,13 +216,7 @@ GROUP BY 1;
 
 ---% grocery volume
 
-SELECT DISTINCT ds.BUSINESS_NAME
-FROM dimension_store AS ds
-WHERE ds.business_id IN (331358, 11662180, 11116009)
-;
-
-
-CREATE OR REPLACE TABLE dianedou.flower_vol_by_store_category AS
+CREATE OR REPLACE TABLE dianedou.Vday_2024_flower_deliveries AS
 WITH ENT AS (SELECT DISTINCT l.business_group_id
                            , g.name AS business_group_name
                            --  , count(*)
@@ -261,24 +251,25 @@ WITH ENT AS (SELECT DISTINCT l.business_group_id
                                                   (2863075, 2243949, 23025694, 2195964, 23026199, 2238210, 23025499,
                                                    22983505,
                                                    22978711, 2195964, 2243949, 22953520) THEN 'Shipped Flowers'
-                                             WHEN ds.business_id IN (749869) THEN '1P'
                                              WHEN ds.business_id IN (699568) THEN 'FTD Grocery'
-                                             WHEN ds.store_id IN
-                                                  (1480889, 1480887, 1480895, 1480859, 1480871, 1480897, 1480890,
-                                                   1480909,
-                                                   1480898, 1480885, 1480878, 1480905, 1480867, 1480880, 1480876,
-                                                   1480883,
-                                                   1480866, 1480870, 1480875, 1480873) THEN 'Family Flowers'
+                                             --                                              WHEN ds.store_id IN
+--                                                   (1480889, 1480887, 1480895, 1480859, 1480871, 1480897, 1480890,
+--                                                    1480909,
+--                                                    1480898, 1480885, 1480878, 1480905, 1480867, 1480880, 1480876,
+--                                                    1480883,
+--                                                    1480866, 1480870, 1480875, 1480873) THEN 'Family Flowers'
                                              WHEN t.management_type = 'UNMANAGED' AND ds.business_id <> 852091
-                                                 THEN 'Pure Play Florist'
+                                                 THEN 'SMB Florist' --'Pure Play Florist'
                                              WHEN t.management_type = 'ENTERPRISE' AND
                                                   ds.business_id IN (SELECT business_id
                                                                      FROM ent
                                                                      WHERE BUSINESS_GROUP_NAME = 'FTD Floral'
                                                                        AND business_id <> '699568')
                                                  THEN 'FTD Independent'
-                                             WHEN t.management_type = 'ENTERPRISE' OR ds.business_id = 852091
+                                             WHEN (t.management_type = 'ENTERPRISE' OR ds.business_id = 852091) AND
+                                                  (ds.business_id <> 11540341)
                                                  THEN 'Grocery'
+                                             WHEN ds.business_id IN (11540341) THEN 'Edible'
                                              END                                      AS TYPE,
                                          ds.is_active
                                   FROM DOORDASH_MERCHANT.PUBLIC.MAINDB_BUSINESS AS b
@@ -303,11 +294,11 @@ WITH ENT AS (SELECT DISTINCT l.business_group_id
                             WHERE 1 = 1
                               AND ds.is_active = TRUE
                               AND ds.country_id = 1
-                              AND ds.business_id IN (749869))
+                              AND ds.business_id IN (749869)) --FBG
 
-   , flower_deliveries AS (SELECT ds.type AS Store_category, dd.*
+   , flower_deliveries AS (SELECT DISTINCT ds.type AS Store_category, dd.*
                            FROM public.dimension_deliveries dd
-                                JOIN (SELECT DISTINCT type, store_id FROM flower_store_table) ds
+                                JOIN (SELECT DISTINCT type, BUSINESS_NAME, store_id FROM flower_store_table) ds
                                    ON dd.store_id = ds.store_id
                            WHERE 1 = 1
                              AND dd.is_filtered_core = 1
@@ -323,20 +314,214 @@ WITH ENT AS (SELECT DISTINCT l.business_group_id
                                         cat.MERCHANT_SUPPLIED_ID = do.MERCHANT_SUPPLIED_ID
 
                              WHERE 1 = 1
-                               AND dd.business_id IN (331358, 11662180, 11116009)
+                               AND dd.business_id IN (331358, 11662180, 11116009) --Dashmart, neighborhood grocery
                                AND cat.AISLE_NAME_L2 = 'Flowers'
                                AND dd.is_filtered_core = TRUE
                                AND dd.active_date BETWEEN '2024-02-05' AND '2024-02-15'
                              ORDER BY 1 DESC)
 
+   , cng_deliveries AS (SELECT distinct '3P-Convenience' as Store_category, d.*
+
+                    FROM EDW.CNG.FACT_NON_RX_ORDER_ITEM_DETAILS i
+                         JOIN PRODDB.TABLEAU.NEW_VERTICALS_STORES nv
+                            ON i.STORE_ID = nv.STORE_ID
+                        AND nv.CNG_BUSINESS_LINE = '3P Convenience' AND nv.COUNTRY_CODE = 'US'
+                         JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES d
+                            ON i.DELIVERY_ID = d.DELIVERY_ID
+                    WHERE 1 = 1
+                      AND (
+                        (i.business_id IN (412816) AND (i.ITEM_MERCHANT_SUPPLIED_ID IN
+                                                        ('587968', '233855', '661822', '393210', '607638', '920801',
+                                                         '690643', '278693', '255317', '180733', '678138', '319511',
+                                                         '461538', '390139', '741312', '200777', '143035', '436909',
+                                                         '636009', '508068', '340278', '632592', '494876', '435112',
+                                                         '337710', '435101', '948230', '711138', '713029', '652338',
+                                                         '583989', '603434', '881414', '124189', '418690', '430448',
+                                                         '872841'))) -- CVS
+                            OR (i.business_id IN (434024, 586904) AND (i.ITEM_MERCHANT_SUPPLIED_ID IN
+                                                                       ('662786', '204620', '250529', '881238',
+                                                                        '204621', '250532', '317477', '317483',
+                                                                        '250522', '250524', '880551', '250525',
+                                                                        '284186', '284187', '284185', '284184',
+                                                                        '284183', '284188'))) -- WAG
+                            OR (i.business_id IN (715696, 912841) AND
+                                (i.ITEM_MERCHANT_SUPPLIED_ID IN ('270415', '2230189', '2203416', '5086287'))) -- RA
+                            OR (i.business_id IN (799015, 847462, 847463) AND
+                                (i.ITEM_MERCHANT_SUPPLIED_ID IN ('37999001', '37999101'))) -- DG/DGX/pOpshelf
+                        )
+                      AND d.IS_FILTERED_CORE = TRUE
+                      AND d.ACTIVE_DATE BETWEEN '2024-02-01' AND '2024-02-14'
+                      AND nv.BUSINESS_VERTICAL_ID = 100
+                    )
+
    , deliveries AS (SELECT *
                     FROM flower_deliveries
                     UNION
                     SELECT *
-                    FROM dashmart_deliveries)
+                    FROM dashmart_deliveries
+                    UNION
+                    SELECT *
+                    FROM cng_deliveries)
 
-SELECT CAST(DATE_TRUNC('day', dd.active_date) AS DATE)                                 AS Day_of,
+SELECT *
+FROM deliveries;
+
+CREATE OR REPLACE TABLE dianedou.Vday_2023_flower_deliveries AS
+WITH ENT AS (SELECT DISTINCT l.business_group_id
+                           , g.name AS business_group_name
+                           --  , count(*)
+                           , l.business_id
+                           , s.business_name
+             FROM doordash_merchant.public.maindb_businesss_group_link l
+                  JOIN (SELECT *
+                        FROM doordash_merchant.public.maindb_business_group
+                        WHERE 1 = 1
+                          AND is_test = FALSE
+                          AND business_group_type IN ('ENTERPRISE')) g
+                     ON g.id = l.business_group_id
+                  LEFT JOIN static.enterprise_ownership eo
+                     ON eo.business_group_id = l.business_group_id
+                  JOIN DOORDASH_MERCHANT.PUBLIC.MAINDB_BUSINESS bv
+                     ON l.business_id = bv.id
+                  JOIN public.dimension_store s
+                     ON l.business_id = s.business_id
+             WHERE bv.business_vertical_id = 141)
+
+   , flower_store_table AS (SELECT *
+                            FROM (SELECT ds.store_id,
+                                         ds.name,
+                                         ds.business_id,
+                                         ds.business_name,
+                                         ds.submarket_id,
+                                         ds.submarket_name,
+                                         ds.country_id,
+                                         'https://doordash.com/store/' || ds.store_id AS hyperlink,
+                                         CASE
+                                             WHEN ds.store_id IN
+                                                  (2863075, 2243949, 23025694, 2195964, 23026199, 2238210, 23025499,
+                                                   22983505,
+                                                   22978711, 2195964, 2243949, 22953520) THEN 'Shipped Flowers'
+                                             WHEN ds.business_id IN (699568) THEN 'FTD Grocery'
+                                             --                                              WHEN ds.store_id IN
+--                                                   (1480889, 1480887, 1480895, 1480859, 1480871, 1480897, 1480890,
+--                                                    1480909,
+--                                                    1480898, 1480885, 1480878, 1480905, 1480867, 1480880, 1480876,
+--                                                    1480883,
+--                                                    1480866, 1480870, 1480875, 1480873) THEN 'Family Flowers'
+                                             WHEN t.management_type = 'UNMANAGED' AND ds.business_id <> 852091
+                                                 THEN 'SMB Florist' --'Pure Play Florist'
+                                             WHEN t.management_type = 'ENTERPRISE' AND
+                                                  ds.business_id IN (SELECT business_id
+                                                                     FROM ent
+                                                                     WHERE BUSINESS_GROUP_NAME = 'FTD Floral'
+                                                                       AND business_id <> '699568')
+                                                 THEN 'FTD Independent'
+                                             WHEN (t.management_type = 'ENTERPRISE' OR ds.business_id = 852091) AND
+                                                  (ds.business_id <> 11540341)
+                                                 THEN 'Grocery'
+                                             WHEN ds.business_id IN (11540341) THEN 'Edible'
+                                             END                                      AS TYPE,
+                                         ds.is_active
+                                  FROM DOORDASH_MERCHANT.PUBLIC.MAINDB_BUSINESS AS b
+                                       JOIN dimension_store AS ds
+                                          ON ds.business_id = b.id
+                                       JOIN dimension_store_ext AS t
+                                          ON t.store_id = ds.store_id
+                                  WHERE 1 = 1
+                                    AND b.business_vertical_id IN (141))
+                            UNION
+                            SELECT DISTINCT ds.store_id,
+                                            ds.name,
+                                            ds.business_id,
+                                            ds.business_name,
+                                            ds.submarket_id,
+                                            ds.submarket_name,
+                                            ds.country_id,
+                                            'https://doordash.com/store/' || ds.store_id AS hyperlink,
+                                            '1P'                                         AS type,
+                                            ds.is_active
+                            FROM dimension_store AS ds
+                            WHERE 1 = 1
+                              AND ds.is_active = TRUE
+                              AND ds.country_id = 1
+                              AND ds.business_id IN (749869)) --FBG
+
+   , flower_deliveries AS (SELECT DISTINCT ds.type AS Store_category, dd.*
+                           FROM public.dimension_deliveries dd
+                                JOIN (SELECT DISTINCT type, BUSINESS_NAME, store_id FROM flower_store_table) ds
+                                   ON dd.store_id = ds.store_id
+                           WHERE 1 = 1
+                             AND dd.is_filtered_core = 1
+                             AND dd.active_date BETWEEN '2023-02-05' AND '2023-02-15')
+
+
+   , dashmart_deliveries AS (SELECT DISTINCT '1P' AS Store_category, dd.*
+                             FROM public.dimension_deliveries dd
+                                  JOIN public.dimension_order_item do
+                                     ON dd.delivery_id = do.delivery_id
+                                  LEFT JOIN catalog_service_prod.public.product_item cat
+                                     ON cat.DD_BUSINESS_ID = do.BUSINESS_ID AND
+                                        cat.MERCHANT_SUPPLIED_ID = do.MERCHANT_SUPPLIED_ID
+
+                             WHERE 1 = 1
+                               AND dd.business_id IN (331358, 11662180, 11116009) --Dashmart, neighborhood grocery
+                               AND cat.AISLE_NAME_L2 = 'Flowers'
+                               AND dd.is_filtered_core = TRUE
+                               AND dd.active_date BETWEEN '2023-02-05' AND '2023-02-15'
+                             ORDER BY 1 DESC)
+
+   , cng_deliveries AS (SELECT distinct '3P-Convenience' as Store_category, d.*
+
+                    FROM EDW.CNG.FACT_NON_RX_ORDER_ITEM_DETAILS i
+                         JOIN PRODDB.TABLEAU.NEW_VERTICALS_STORES nv
+                            ON i.STORE_ID = nv.STORE_ID
+                        AND nv.CNG_BUSINESS_LINE = '3P Convenience' AND nv.COUNTRY_CODE = 'US'
+                         JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES d
+                            ON i.DELIVERY_ID = d.DELIVERY_ID
+                    WHERE 1 = 1
+                      AND (
+                        (i.business_id IN (412816) AND (i.ITEM_MERCHANT_SUPPLIED_ID IN
+                                                        ('587968', '233855', '661822', '393210', '607638', '920801',
+                                                         '690643', '278693', '255317', '180733', '678138', '319511',
+                                                         '461538', '390139', '741312', '200777', '143035', '436909',
+                                                         '636009', '508068', '340278', '632592', '494876', '435112',
+                                                         '337710', '435101', '948230', '711138', '713029', '652338',
+                                                         '583989', '603434', '881414', '124189', '418690', '430448',
+                                                         '872841'))) -- CVS
+                            OR (i.business_id IN (434024, 586904) AND (i.ITEM_MERCHANT_SUPPLIED_ID IN
+                                                                       ('662786', '204620', '250529', '881238',
+                                                                        '204621', '250532', '317477', '317483',
+                                                                        '250522', '250524', '880551', '250525',
+                                                                        '284186', '284187', '284185', '284184',
+                                                                        '284183', '284188'))) -- WAG
+                            OR (i.business_id IN (715696, 912841) AND
+                                (i.ITEM_MERCHANT_SUPPLIED_ID IN ('270415', '2230189', '2203416', '5086287'))) -- RA
+                            OR (i.business_id IN (799015, 847462, 847463) AND
+                                (i.ITEM_MERCHANT_SUPPLIED_ID IN ('37999001', '37999101'))) -- DG/DGX/pOpshelf
+                        )
+                      AND d.IS_FILTERED_CORE = TRUE
+                      AND d.ACTIVE_DATE BETWEEN '2023-02-01' AND '2023-02-14'
+                      AND nv.BUSINESS_VERTICAL_ID = 100
+                    )
+
+   , deliveries AS (SELECT *
+                    FROM flower_deliveries
+                    UNION
+                    SELECT *
+                    FROM dashmart_deliveries
+                    UNION
+                    SELECT *
+                    FROM cng_deliveries)
+
+SELECT *
+FROM deliveries;
+
+CREATE OR REPLACE TABLE dianedou.Vday_2024_flower_vol_by_store_category AS
+
+SELECT
+--     CAST(DATE_TRUNC('day', dd.active_date) AS DATE)                                 AS Day_of,
        dd.Store_category                                                               AS Store_category,
+       case when dd.BUSINESS_NAME ILIKE 'Bloom haus%' then 'Kroger' else dd.BUSINESS_NAME END as Business,
        COUNT(DISTINCT dd.store_id)                                                     AS Act_Stores,
        COUNT(DISTINCT dd.delivery_id)                                                  AS Vol,
        Vol / act_stores                                                                AS Act_OSD,
@@ -357,7 +542,7 @@ SELECT CAST(DATE_TRUNC('day', dd.active_date) AS DATE)                          
        SUM(dd.GOV) * .01 / vol                                                         AS AOV,
        SUM(dd.variable_profit) * 0.01                                                  AS VP,
        VP / vol                                                                        AS UE
-FROM deliveries dd
+FROM dianedou.Vday_2024_flower_deliveries dd
      LEFT JOIN fact_promo_code_redemptions fpcr
         ON dd.delivery_id = fpcr.delivery_id AND fpcr.is_fmx = 0 AND
            (fpcr.code IS NOT NULL OR fpcr.campaign_id IS NOT NULL)
@@ -368,46 +553,27 @@ GROUP BY 1, 2
 ORDER BY 1 DESC
 ;
 
+
+GRANT SELECT ON TABLE dianedou.Vday_2024_flower_deliveries TO READ_ONLY_USERS;
+GRANT SELECT ON TABLE dianedou.Vday_2024_flower_vol_by_store_category TO READ_ONLY_USERS;
+
 SELECT STORE_CATEGORY
      , SUM(Vol)
      , SUM(GOV)
      , SUM(GOV) / SUM(Vol) AS AOV
 
-FROM dianedou.flower_vol_by_store_category
+FROM dianedou.Vday_2024_flower_vol_by_store_category
 GROUP BY 1
 ;
 
--- SELECT d.Day_of,
---        d.Store_category,
---        d.Act_Stores,
---        (d.Act_Stores / lw.Act_Stores) - 1 AS stores_ww,
---        (d.Act_Stores / lm.Act_Stores) - 1 AS stores_mm,
---        d.Vol,
---        (d.vol / lw.vol) - 1               AS vol_ww,
---        (d.vol / lm.vol) - 1               AS vol_mm,
---        d.Act_OSD,
---        d.Subtotal,
---        d.GOV,
---        d.AOV,
---        d.VP,
---        (d.VP / lw.VP) - 1                 AS vp_ww,
---        (d.VP / lm.VP) - 1                 AS vp_mm,
---        d.UE,
---        (d.UE / lw.UE) - 1                 AS ue_ww,
---        (d.UE / lm.UE) - 1                 AS ue_mm,
---        d.ASAP,
---        d.Sched,
---        d.Gift,
---        d.Non_Gift,
---        d.DP,
---        d.Non_DP,
---        d.promo_vol,
---        d.nonpromo_vol
--- FROM daily d
---      LEFT JOIN daily lw
---         ON d.day_of - 7 = lw.day_of
---      LEFT JOIN daily lm
---         ON d.day_of - 28 = lm.day_of
--- WHERE d.day_of < CURRENT_DATE
--- ORDER BY 1 DESC
--- LIMIT 50
+
+SELECT STORE_CATEGORY
+--      , BUSINESS_NAME
+     , COUNT(DISTINCT DELIVERY_ID)
+     , SUM(GOV)
+     , COUNT (DISTINCT CASE WHEN CANCELLED_AT is not null then DELIVERY_ID end) as cancelled_orders_cnt
+
+FROM dianedou.Vday_2024_flower_deliveries
+GROUP BY 1
+;
+
