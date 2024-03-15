@@ -140,13 +140,29 @@ WHERE cx_profile_order_labels.BUSINESS_LINE IN (
     )
 GROUP BY ALL;
 
-SELECT Business_line
+SELECT
+    Business_line
     , ANCHOR_ITEM_NAME
     , count(distinct delivery_id) as num_deliveries
-FROM brycebeckwith.cx_profile_order_labels
+FROM brycebeckwith.cx_profile_order_labels a
+join dianedou.easter_2024_item_list b
+on a.
 WHERE ANCHOR_ITEM_AISLE_NAME_L2 IN (SELECT DISTINCT AISLE_NAME_L2 FROM dianedou.easter_2024_item_list)
   AND created_at::DATE BETWEEN '2023-04-06' AND '2023-04-09'
 GROUP BY ALL
 ORDER BY 3 DESC
 -- LIMIT 50
 ;
+
+select *
+FROM brycebeckwith.cx_profile_order_labels a
+limit 100;
+
+SELECT count(distinct delivery_id) as num_deliveries
+FROM brycebeckwith.cx_profile_order_labels a
+-- join dianedou.easter_2024_item_list b
+-- on a.ANCHOR_ITEM_NAME = b.ITEM_NAME
+WHERE ANCHOR_ITEM_AISLE_NAME_L2 IN (SELECT DISTINCT AISLE_NAME_L2 FROM dianedou.easter_2024_item_list)
+  AND created_at::DATE BETWEEN '2023-04-06' AND '2023-04-09'
+GROUP BY ALL
+-- ORDER BY 3 DESC

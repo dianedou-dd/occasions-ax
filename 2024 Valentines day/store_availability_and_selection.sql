@@ -176,7 +176,7 @@ WITH sub AS (SELECT  dd.STORE_CATEGORY
 
              WHERE 1 = 1
                AND cat.AISLE_NAME_L2 = 'Flowers'
---                AND dd.is_filtered_core = TRUE
+               AND dd.is_filtered_core = TRUE
 
              ORDER BY 1 DESC)
 
@@ -189,9 +189,43 @@ from sub
 group by all
 ;
 
+WITH sub AS (SELECT  dd.STORE_CATEGORY
+             , dd.BUSINESS_NAME
+             , dd.DELIVERY_ID
+             , dd.SUBTOTAL
+             , do.ITEM_NAME
+             , do.ITEM_PRICE as unit_price
+             , do.TOTAL_ITEM_PRICE as item_subtotal
+             FROM dianedou.Vday_2024_flower_deliveries dd
+                 JOIN edw.cng.fact_non_rx_order_item_details do
+             ON DD.DELIVERY_ID = do.DELIVERY_ID
+--                   JOIN public.dimension_order_item do
+--                      ON dd.delivery_id = do.delivery_id
+--                   LEFT JOIN catalog_service_prod.public.product_item cat
+--                      ON cat.DD_BUSINESS_ID = do.BUSINESS_ID AND
+--                         cat.MERCHANT_SUPPLIED_ID = do.MERCHANT_SUPPLIED_ID
 
+             WHERE 1 = 1
+               AND do.AISLE_NAME_L2 = 'Flowers'
+--                AND dd.is_filtered_core = TRUE
 
+             ORDER BY 1 DESC)
 
+select *
+
+from sub
+limit 100;
+-- select STORE_CATEGORY
+-- , BUSINESS_NAME
+-- , avg(subtotal) as avg_order_subtotal
+-- , avg(UNIT_PRICE)
+-- , avg(item_subtotal)
+-- from sub
+-- group by all
+;
+
+select * from public.dimension_order_item d
+;
 SELECT *
 FROM PUBLIC.DIMENSION_MENU_ITEM m
      JOIN dimension_store ds
@@ -216,3 +250,72 @@ WHERE ds.business_id IN (
     )
   AND ds.is_active = TRUE
   AND m.is_active = TRUE
+;
+
+
+
+
+SELECT count(DISTINCT b.DELIVERY_ID)
+FROM dianedou.vday_2024_cx_level_performance as b
+-- on a.DELIVERY_ID = b.DELIVERY_ID
+;
+
+SELECT count(DISTINCT b.DELIVERY_ID)
+FROM dianedou.Vday_2024_flower_deliveries as b
+-- on a.DELIVERY_ID = b.DELIVERY_ID
+;
+
+
+SELECT a.STORE_CATEGORY
+, case when c."Campaign ID" is not null then 'promos' else 'non-promos' end as promo_attached
+, count(distinct a.DELIVERY_ID) orders
+
+-- , orders_with_promo / orders
+
+FROM dianedou.Vday_2024_flower_deliveries A
+LEFT JOIN edw.invoice.fact_promotion_deliveries DD
+ON A.DELIVERY_ID = DD.DELIVERY_ID
+left join  dianedou.Vday_2024_promo_codes C
+ON C."Campaign ID"::VARCHAR = dd.CAMPAIGN_ID::VARCHAR
+group by 1,2
+
+
+with sub as (SELECT distinct A.DELIVERY_ID
+
+FROM dianedou.Vday_2024_flower_deliveries A
+LEFT JOIN edw.invoice.fact_promotion_deliveries DD
+ON A.DELIVERY_ID = DD.DELIVERY_ID
+left join  dianedou.Vday_2024_promo_codes C
+ON C."Campaign ID"::VARCHAR = dd.CAMPAIGN_ID::VARCHAR
+where c."Campaign ID" is not null )
+
+select count(distinct DELIVERY_ID) from (select * from sub
+union all
+select distinct b.DELIVERY_ID from dianedou.vday_2024_cx_level_performance b);
+
+select a.STORE_CATEGORY
+, b.VERTICAL
+, count(distinct b.DELIVERY_ID)
+, sum(ALL_CX_DISCOUNT)
+, sum(MX_FUNDED_CX_DISCOUNT)
+
+FROM dianedou.vday_2024_cx_level_performance b
+left join dianedou.Vday_2024_flower_deliveries a
+on a.DELIVERY_ID = b.DELIVERY_ID
+group by 1,2
+;
+
+select STORE_CATEGORY
+, count(distinct delivery_id)
+from dianedou.Vday_2024_flower_deliveries
+group by 1;
+
+select a.STORE_CATEGORY
+, a.IS_ACTIVE_SUBSCRIBED_CONSUMER
+-- , b.VERTICAL
+, count(distinct b.DELIVERY_ID)
+
+FROM dianedou.vday_2024_cx_level_performance b
+left join dianedou.Vday_2024_flower_deliveries a
+on a.DELIVERY_ID = b.DELIVERY_ID
+group by 1,2

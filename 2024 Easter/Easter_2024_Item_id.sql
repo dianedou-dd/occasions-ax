@@ -1386,8 +1386,6 @@ GROUP BY ALL;
 -- FROM summary;
 
 
-
-
 ----easter item orderers
 WITH daily_volume AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
                              DATE_TRUNC('week', i.DELIVERY_CREATED_AT::DATE) AS week_cohort,
@@ -1481,7 +1479,8 @@ WITH sub AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
                     SUM(i.quantity_requested)                       AS item_quantity,
                     SUM(i.TOTAL_ITEM_PRICE / 100)                   AS item_price,
                     SUM(dd.GOV / 100)                               AS order_gov,
-                    SUM(dd.SUBTOTAL / 100)                          AS order_subtotal
+                    SUM(dd.SUBTOTAL / 100)                          AS order_subtotal,
+                    COUNT(DISTINCT dd.DELIVERY_ID)                  AS num_orders
 
 
              FROM edw.cng.fact_non_rx_order_item_details i
@@ -1513,9 +1512,11 @@ SELECT week_cohort
      , SUM(item_price)     AS item_subtotals
      , SUM(order_gov)      AS order_gov_ttl
      , SUM(order_subtotal) AS order_subtotals
+     , SUM(num_orders)
 
 
 FROM sub
+-- WHERE dt BETWEEN '2023-04-06' AND '2023-04-09'
 GROUP BY 1, 2
 ;
 
@@ -1677,21 +1678,21 @@ WITH sub AS (SELECT i.*
                  AND i.AISLE_NAME_L2 IN (SELECT DISTINCT AISLE_NAME_L2 FROM dianedou.easter_2024_item_list_p1)
                  AND i.delivery_created_at::DATE = '2023-04-09')
 
-, top_ten as (SELECT DELIVERY_CREATED_AT::DATE AS dt,
-       BUSINESS_NAME,
-       COUNT(DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) as volume_share
-FROM sub
-GROUP BY ALL
-ORDER BY 3 DESC, 2
-limit 10)
+   , top_ten AS (SELECT DELIVERY_CREATED_AT::DATE                                 AS dt,
+                        BUSINESS_NAME,
+                        COUNT(DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) AS volume_share
+                 FROM sub
+                 GROUP BY ALL
+                 ORDER BY 3 DESC, 2
+                 LIMIT 10)
 
 -- select distinct BUSINESS_ID
 -- , sub.BUSINESS_NAME
 -- , volume_share
 -- from sub
 -- join top_ten on sub.BUSINESS_NAME = top_ten.BUSINESS_NAME
-SELECT * FROM TOP_TEN
-
+SELECT *
+FROM TOP_TEN
 ;
 ---TOP 10 Rx during last easter
 WITH sub AS (SELECT *
@@ -1702,29 +1703,28 @@ WITH sub AS (SELECT *
                AND COUNTRY_ID = 1
                AND ACTIVE_DATE::DATE = '2023-04-09')
 
-, cng as (
-    SELECT DISTINCT
+   , cng AS (SELECT DISTINCT
 --     store_id
-    business_id
-    ,business_name
-    ,org
-    , case when org IN ('Drive','Other') then org
-        when org IN ('Retail','CnGnA') then vertical_name
-        end as cng_business_line
-    from edw.cng.dimension_new_vertical_store_tags
+                 business_id
+                           , business_name
+                           , org
+                           , CASE
+                                 WHEN org IN ('Drive', 'Other') THEN org
+                                 WHEN org IN ('Retail', 'CnGnA') THEN vertical_name
+        END AS cng_business_line
+             FROM edw.cng.dimension_new_vertical_store_tags)
 
-    )
-
-, TOP_TEN AS (SELECT dd.BUSINESS_NAME
+   , TOP_TEN AS (SELECT dd.BUSINESS_NAME
 --      , dd.BUSINESS_ID
-     , COUNT(DISTINCT dd.DELIVERY_ID) AS volume
-     , COUNT(DISTINCT dd.DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) AS volume_share
-FROM sub dd
-left join cng on cng.BUSINESS_ID = dd.BUSINESS_ID
-where CNG.BUSINESS_ID IS NULL
-GROUP BY ALL
-ORDER BY 2 DESC
-LIMIT 10)
+                      , COUNT(DISTINCT dd.DELIVERY_ID)                                        AS volume
+                      , COUNT(DISTINCT dd.DELIVERY_ID) / (SELECT COUNT(DELIVERY_ID) FROM sub) AS volume_share
+                 FROM sub dd
+                      LEFT JOIN cng
+                         ON cng.BUSINESS_ID = dd.BUSINESS_ID
+                 WHERE CNG.BUSINESS_ID IS NULL
+                 GROUP BY ALL
+                 ORDER BY 2 DESC
+                 LIMIT 10)
 
 -- select distinct BUSINESS_ID
 -- , sub.BUSINESS_NAME
@@ -1732,4 +1732,357 @@ LIMIT 10)
 -- from sub
 -- join top_ten on sub.BUSINESS_NAME = top_ten.BUSINESS_NAME
 
-SELECT * FROM TOP_TEN;
+SELECT *
+FROM TOP_TEN;
+
+----easter candy re-purchaser
+WITH daily_volume AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
+                             DATE_TRUNC('week', i.DELIVERY_CREATED_AT::DATE) AS week_cohort,
+                             i.DELIVERY_ID,
+                             i.CREATOR_ID,
+                             SUM(i.quantity_requested)                       AS item_quantity,
+                             SUM(i.TOTAL_ITEM_PRICE / 100)                   AS item_price
+                      --                              SUM(GOV / 100)                                  AS order_gov,
+--                              SUM(SUBTOTAL / 100)                             AS order_subtotal
+
+
+                      FROM edw.cng.fact_non_rx_order_item_details i
+                      WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+                         OR (AISLE_NAME_L2 ILIKE '%candies%')
+                         OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+                          AND ((i.delivery_created_at BETWEEN DATEADD('DAY', -28*3+1, '2023-03-30'::DATE)  AND '2023-04-09') OR
+                               (i.delivery_created_at BETWEEN '2023-12-18' AND '2024-02-12'))
+                      --                            JOIN catalog_service_prod.public.product_item p
+-- --                               ON i.ITEM_MERCHANT_SUPPLIED_ID = p.MERCHANT_SUPPLIED_ID AND
+-- --                                  i.BUSINESS_ID = p.DD_BUSINESS_ID
+
+--                            JOIN dianedou.easter_2024_item_list_p1 l
+--                           --                               ON p.merchant_supplied_id = l."itemMerchantSuppliedId"
+-- --                           AND p.dd_business_id = l."businessId"
+--                               ON l.AISLE_NAME_L2 = i.AISLE_NAME_L2
+--                               AND ((i.delivery_created_at BETWEEN '2022-12-18' AND '2023-04-09') OR
+--                                   (i.delivery_created_at BETWEEN '2023-12-18' AND '2024-02-12'))
+--                       --                            JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+-- --                               ON i.DELIVERY_ID = dd.DELIVERY_ID
+-- --                        WHERE p.product_category_id IN
+--                              (SELECT DISTINCT PRODUCT_CATEGORY_ID FROM dianedou.easter_2024_item_list)
+
+                      GROUP BY 1, 2, 3, 4
+                      ORDER BY 1
+                              DESC, 2)
+
+   , sub AS (SELECT i.*,
+                    SUM(GOV / 100)      AS order_gov,
+                    SUM(SUBTOTAL / 100) AS order_subtotal
+             FROM daily_volume i
+                  JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                     ON i.DELIVERY_ID = dd.DELIVERY_ID
+             GROUP BY 1, 2, 3, 4, 5, 6)
+
+   , summary AS (SELECT 'last-year-baseline'        AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2022-12-19' AND '2023-02-12'
+                 UNION ALL
+                 SELECT 'last-year-3M-prior'       AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-03-30'::DATE) AND '2023-03-30'
+                 UNION ALL
+                 SELECT 'last-year-easter' --10days easter last year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2023-03-30' AND '2023-04-09'
+                 UNION ALL
+                 SELECT 'last-year-easter-retained' --10days easter last year
+                      , SUM(item_quantity)                                                                      AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID)                                                             AS basket_vol
+                      , SUM(item_price)                                                                         AS item_subtotal
+                      , SUM(order_gov)                                                                          AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)                                                                     AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CASE
+                                           WHEN prior_orderers.CREATOR_ID IS NOT NULL
+                                               THEN sub.CREATOR_ID END)                                         AS PURCHASER
+                 FROM sub
+                      LEFT JOIN (SELECT DISTINCT creator_id
+                                 FROM sub
+                                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-03-30'::DATE) AND '2023-03-30') prior_orderers
+                         ON sub.CREATOR_ID = prior_orderers.CREATOR_ID
+                 WHERE dt BETWEEN '2023-03-30' AND '2023-04-09'
+                 UNION ALL
+                 SELECT 'this-year-baseline' --8 weeks before Vday this year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2023-12-18' AND '2024-02-11'
+                 UNION ALL
+                 SELECT 'this-year-30d-prior'       AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN DATEADD('DAY', -29, '2024-03-13'::DATE) AND '2024-03-13'
+
+                 )
+
+SELECT *
+FROM summary;
+
+SELECT DISTINCT AISLE_NAME_L2
+FROM dianedou.easter_2024_item_list
+WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+   OR (AISLE_NAME_L2 ILIKE '%candies%')
+   OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+;
+
+--'Hard Candy'
+
+----candy ordering frequency --not habituated
+
+WITH daily_volume AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
+                             DATE_TRUNC('week', i.DELIVERY_CREATED_AT::DATE) AS week_cohort,
+                             i.DELIVERY_ID,
+                             i.CREATOR_ID,
+                             SUM(i.quantity_requested)                       AS item_quantity,
+                             SUM(i.TOTAL_ITEM_PRICE / 100)                   AS item_price
+
+                      FROM edw.cng.fact_non_rx_order_item_details i
+                      WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+                         OR (AISLE_NAME_L2 ILIKE '%candies%')
+                         OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+                          AND (i.delivery_created_at BETWEEN dateadd('day', -28+1, '2024-02-12') AND '2024-02-12')
+                      GROUP BY 1, 2, 3, 4
+                      ORDER BY 1
+                              DESC, 2)
+
+   , sub AS (SELECT CREATOR_ID
+                  , COUNT(DISTINCT DELIVERY_ID) AS orders
+             FROM daily_volume
+             GROUP BY 1)
+
+SELECT AVG(orders)
+FROM sub;
+
+----easter candy re-purchaser
+WITH daily_volume AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
+                             DATE_TRUNC('week', i.DELIVERY_CREATED_AT::DATE) AS week_cohort,
+                             i.DELIVERY_ID,
+                             i.CREATOR_ID,
+                             SUM(i.quantity_requested)                       AS item_quantity,
+                             SUM(i.TOTAL_ITEM_PRICE / 100)                   AS item_price
+                      --                              SUM(GOV / 100)                                  AS order_gov,
+--                              SUM(SUBTOTAL / 100)                             AS order_subtotal
+
+
+                      FROM edw.cng.fact_non_rx_order_item_details i
+                      WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+                         OR (AISLE_NAME_L2 ILIKE '%candies%')
+                         OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+                          AND ((i.delivery_created_at BETWEEN DATEADD('DAY', -28*3+1, '2023-03-29'::DATE)  AND '2023-04-09') OR
+                               (i.delivery_created_at BETWEEN '2023-12-18' AND '2024-02-12'))
+                      --                            JOIN catalog_service_prod.public.product_item p
+-- --                               ON i.ITEM_MERCHANT_SUPPLIED_ID = p.MERCHANT_SUPPLIED_ID AND
+-- --                                  i.BUSINESS_ID = p.DD_BUSINESS_ID
+
+--                            JOIN dianedou.easter_2024_item_list_p1 l
+--                           --                               ON p.merchant_supplied_id = l."itemMerchantSuppliedId"
+-- --                           AND p.dd_business_id = l."businessId"
+--                               ON l.AISLE_NAME_L2 = i.AISLE_NAME_L2
+--                               AND ((i.delivery_created_at BETWEEN '2022-12-18' AND '2023-04-09') OR
+--                                   (i.delivery_created_at BETWEEN '2023-12-18' AND '2024-02-12'))
+--                       --                            JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+-- --                               ON i.DELIVERY_ID = dd.DELIVERY_ID
+-- --                        WHERE p.product_category_id IN
+--                              (SELECT DISTINCT PRODUCT_CATEGORY_ID FROM dianedou.easter_2024_item_list)
+
+                      GROUP BY 1, 2, 3, 4
+                      ORDER BY 1
+                              DESC, 2)
+
+   , sub AS (SELECT i.*,
+                    SUM(GOV / 100)      AS order_gov,
+                    SUM(SUBTOTAL / 100) AS order_subtotal
+             FROM daily_volume i
+                  JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                     ON i.DELIVERY_ID = dd.DELIVERY_ID
+             GROUP BY 1, 2, 3, 4, 5, 6)
+
+   , summary AS (SELECT 'last-year-baseline'        AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2022-12-19' AND '2023-02-12'
+                 UNION ALL
+                 SELECT 'last-year-3M-prior'       AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-03-29'::DATE) AND '2023-03-29'
+                 UNION ALL
+                 SELECT 'last-year-easter' --10days easter last year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2023-03-30' AND '2023-04-09'
+                 UNION ALL
+                 SELECT 'last-year-easter-retained' --10days easter last year
+                      , SUM(item_quantity)                                                                      AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID)                                                             AS basket_vol
+                      , SUM(item_price)                                                                         AS item_subtotal
+                      , SUM(order_gov)                                                                          AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)                                                                     AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CASE
+                                           WHEN prior_orderers.CREATOR_ID IS NOT NULL
+                                               THEN sub.CREATOR_ID END)                                         AS PURCHASER
+                 FROM sub
+                      LEFT JOIN (SELECT DISTINCT creator_id
+                                 FROM sub
+                                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-03-29'::DATE) AND '2023-03-29') prior_orderers
+                         ON sub.CREATOR_ID = prior_orderers.CREATOR_ID
+                 WHERE dt BETWEEN '2023-03-30' AND '2023-04-09'
+                 UNION ALL
+                 SELECT 'this-year-baseline' --8 weeks before Vday this year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2023-12-18' AND '2024-02-11'
+                 UNION ALL
+                 SELECT 'this-year-30d-prior'       AS time_period --8 weeks before Vday
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN DATEADD('DAY', -29, '2024-03-13'::DATE) AND '2024-03-13'
+
+                 )
+
+SELECT *
+FROM summary;
+
+SELECT DISTINCT AISLE_NAME_L2
+FROM dianedou.easter_2024_item_list
+WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+   OR (AISLE_NAME_L2 ILIKE '%candies%')
+   OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+;
+
+----halloween candy re-purchaser
+WITH daily_volume AS (SELECT i.DELIVERY_CREATED_AT::DATE                     AS dt,
+                             DATE_TRUNC('week', i.DELIVERY_CREATED_AT::DATE) AS week_cohort,
+                             i.DELIVERY_ID,
+                             i.CREATOR_ID,
+                             SUM(i.quantity_requested)                       AS item_quantity,
+                             SUM(i.TOTAL_ITEM_PRICE / 100)                   AS item_price
+                      --                              SUM(GOV / 100)                                  AS order_gov,
+--                              SUM(SUBTOTAL / 100)                             AS order_subtotal
+
+
+                      FROM edw.cng.fact_non_rx_order_item_details i
+                      WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+                         OR (AISLE_NAME_L2 ILIKE '%candies%')
+                         OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+                          AND (i.delivery_created_at BETWEEN DATEADD('DAY', -28*3+1, '2023-10-31'::DATE)  AND '2023-10-31')
+                      GROUP BY 1, 2, 3, 4
+                      ORDER BY 1
+                              DESC, 2)
+
+   , sub AS (SELECT i.*,
+                    SUM(GOV / 100)      AS order_gov,
+                    SUM(SUBTOTAL / 100) AS order_subtotal
+             FROM daily_volume i
+                  JOIN PRODDB.PUBLIC.DIMENSION_DELIVERIES dd
+                     ON i.DELIVERY_ID = dd.DELIVERY_ID
+             GROUP BY 1, 2, 3, 4, 5, 6)
+
+   , summary AS (SELECT 'last-year-halloween' --10days easter last year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN '2023-10-02' AND '2023-10-31'
+
+                 UNION ALL
+
+                 SELECT 'last-year-halloween_prior' --10days easter last year
+                      , SUM(item_quantity)          AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID) AS basket_vol
+                      , SUM(item_price)             AS item_subtotal
+                      , SUM(order_gov)              AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)         AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CREATOR_ID)  AS PURCHASER
+                 FROM sub
+                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-10-01'::DATE)  AND '2023-10-01'
+
+                 UNION ALL
+
+                 SELECT 'last-year-halloween-retained' --10days easter last year
+                      , SUM(item_quantity)                                                                      AS item_quantity
+                      , COUNT(DISTINCT DELIVERY_ID)                                                             AS basket_vol
+                      , SUM(item_price)                                                                         AS item_subtotal
+                      , SUM(order_gov)                                                                          AS TTL_ORDER_GOV
+                      , SUM(order_subtotal)                                                                     AS TTL_ORDER_SUBTOTAL
+                      , COUNT(DISTINCT CASE
+                                           WHEN prior_orderers.CREATOR_ID IS NOT NULL
+                                               THEN sub.CREATOR_ID END)                                         AS PURCHASER
+                 FROM sub
+                      LEFT JOIN (SELECT DISTINCT creator_id
+                                 FROM sub
+                                 WHERE dt BETWEEN DATEADD('DAY', -28*3+1, '2023-10-01'::DATE)  AND '2023-10-01') prior_orderers
+                         ON sub.CREATOR_ID = prior_orderers.CREATOR_ID
+                 WHERE dt BETWEEN '2023-10-02' AND '2023-10-31'
+                 )
+
+SELECT *
+FROM summary;
+
+SELECT DISTINCT AISLE_NAME_L2
+FROM dianedou.easter_2024_item_list
+WHERE (AISLE_NAME_L2 ILIKE '%candy%')
+   OR (AISLE_NAME_L2 ILIKE '%candies%')
+   OR (AISLE_NAME_L2 ILIKE '%chocolate%')
+;
+

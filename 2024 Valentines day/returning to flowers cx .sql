@@ -185,14 +185,14 @@ WITH flower_table AS (SELECT ds.store_id,
                     GROUP BY ALL)
 
 
--- SELECT a.LIFESTAGE
--- , count(DISTINCT a.CREATOR_ID) as redeemers
--- , count(distinct case when ly_cx.CREATOR_ID is not null then a.CREATOR_ID end) as ly_orderers
--- , ly_orderers / redeemers
--- FROM dianedou.vday_2024_cx_level_performance a
--- left join ly_cx on a.CREATOR_ID = ly_cx.CREATOR_ID
--- GROUP BY  1
--- ;
+SELECT a.LIFESTAGE
+, count(DISTINCT a.CREATOR_ID) as redeemers
+, count(distinct case when ly_cx.CREATOR_ID is not null then a.CREATOR_ID end) as ly_orderers
+, ly_orderers / redeemers
+FROM dianedou.vday_2024_cx_level_performance a
+left join ly_cx on a.CREATOR_ID = ly_cx.CREATOR_ID
+GROUP BY  1
+;
 
 SELECT a.LIFESTAGE
      , COUNT(DISTINCT a.CREATOR_ID)                                                 AS redeemers
